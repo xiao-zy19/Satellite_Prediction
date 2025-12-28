@@ -19,26 +19,42 @@ from pathlib import Path
 
 import config
 from config import get_experiment_config
-from dataset import get_dataloaders
+from dataset import get_dataloaders, get_patch_level_dataloaders
 from models import MLPModel, LightCNN, ResNetBaseline
 from utils import set_seed, get_device, compute_metrics, print_metrics
 
 
-def create_model(model_config):
-    """Create model based on configuration."""
+def trimmed_mean(values, trim_ratio=0.1):
+    """Compute trimmed mean by removing extreme values."""
+    values = np.array(values)
+    n = len(values)
+    n_trim = max(1, int(n * trim_ratio))
+    if n <= 2 * n_trim:
+        return np.mean(values)
+    sorted_values = np.sort(values)
+    return np.mean(sorted_values[n_trim:n - n_trim])
+
+
+def create_model(model_config, patch_level: bool = False):
+    """Create model based on configuration.
+
+    Args:
+        model_config: Model configuration
+        patch_level: If True, create model for patch-level training
+    """
     if model_config.name == "mlp":
-        return MLPModel(model_config)
+        return MLPModel(model_config, patch_level=patch_level)
     elif model_config.name == "light_cnn":
-        return LightCNN(model_config)
+        return LightCNN(model_config, patch_level=patch_level)
     elif model_config.name == "resnet":
-        return ResNetBaseline(model_config)
+        return ResNetBaseline(model_config, patch_level=patch_level)
     else:
         raise ValueError(f"Unknown model: {model_config.name}")
 
 
-def load_model(checkpoint_path: str, model_config):
+def load_model(checkpoint_path: str, model_config, patch_level: bool = False):
     """Load model from checkpoint."""
-    model = create_model(model_config)
+    model = create_model(model_config, patch_level=patch_level)
 
     checkpoint = torch.load(checkpoint_path, map_location='cpu')
 
@@ -83,6 +99,95 @@ def evaluate_model(model, data_loader, device, verbose=True):
     y_true = np.concatenate(all_labels).flatten()
     y_pred = np.concatenate(all_preds).flatten()
     metrics = compute_metrics(y_true, y_pred)
+
+    return y_true, y_pred, metrics, all_info
+
+
+@torch.no_grad()
+def evaluate_patch_level(model, data_loader, device, aggregation="trimmed_mean",
+                         trim_ratio=0.1, verbose=True):
+    """
+    Evaluate patch-level model with city-level aggregation.
+
+    In patch-level training, each patch predicts independently.
+    At inference, we aggregate all patch predictions for each city-year
+    into a single prediction.
+
+    Args:
+        model: Patch-level model
+        data_loader: PatchLevelDataset loader
+        device: Device to run on
+        aggregation: How to aggregate patch predictions ("mean", "median", "trimmed_mean")
+        trim_ratio: Ratio for trimmed mean
+        verbose: Whether to show progress bar
+
+    Returns:
+        y_true: Ground truth values (one per city-year)
+        y_pred: Aggregated predicted values (one per city-year)
+        metrics: Evaluation metrics
+        all_info: List of city-year info
+    """
+    model.eval()
+
+    # Collect predictions grouped by city-year
+    city_year_predictions = {}  # key: (city, year) -> list of predictions
+    city_year_labels = {}       # key: (city, year) -> label
+
+    iterator = tqdm(data_loader, desc="Evaluating (patch-level)") if verbose else data_loader
+    for patch, label, info in iterator:
+        patch = patch.to(device)
+        output = model(patch)
+
+        # Get batch size
+        batch_size = patch.size(0)
+
+        for i in range(batch_size):
+            city = info['city'][i]
+            year = info['year'][i].item() if torch.is_tensor(info['year'][i]) else info['year'][i]
+            key = (city, year)
+
+            pred = output[i].cpu().numpy().item()
+            true_label = label[i].numpy().item()
+
+            if key not in city_year_predictions:
+                city_year_predictions[key] = []
+                city_year_labels[key] = true_label
+
+            city_year_predictions[key].append(pred)
+
+    # Aggregate predictions for each city-year
+    y_true = []
+    y_pred = []
+    all_info = []
+
+    for key in sorted(city_year_predictions.keys()):
+        city, year = key
+        predictions = city_year_predictions[key]
+        true_label = city_year_labels[key]
+
+        # Aggregate predictions
+        if aggregation == "mean":
+            agg_pred = np.mean(predictions)
+        elif aggregation == "median":
+            agg_pred = np.median(predictions)
+        elif aggregation == "trimmed_mean":
+            agg_pred = trimmed_mean(predictions, trim_ratio)
+        else:
+            agg_pred = np.mean(predictions)
+
+        y_true.append(true_label)
+        y_pred.append(agg_pred)
+        all_info.append({'city': city, 'year': year, 'num_patches': len(predictions)})
+
+    y_true = np.array(y_true)
+    y_pred = np.array(y_pred)
+    metrics = compute_metrics(y_true, y_pred)
+
+    if verbose:
+        print(f"\nPatch-level evaluation: {len(city_year_predictions)} city-year samples")
+        print(f"Aggregation method: {aggregation}")
+        if aggregation == "trimmed_mean":
+            print(f"Trim ratio: {trim_ratio}")
 
     return y_true, y_pred, metrics, all_info
 
@@ -227,10 +332,12 @@ def main():
     device = get_device()
     print(f"Using device: {device}")
 
-    # Load model
+    # Load model and determine training mode
     if args.exp:
         exp_config = get_experiment_config(args.exp)
         model_config = exp_config.model_config
+        train_config = exp_config.train_config
+        training_mode = train_config.training_mode
         checkpoint_path = config.CHECKPOINT_DIR / args.exp / "best_model.pth"
 
         if not checkpoint_path.exists():
@@ -254,10 +361,17 @@ def main():
         elif args.model == "resnet":
             model_config = config.ResNetConfig()
 
+        # Default to city_level if using checkpoint directly
+        training_mode = "city_level"
+        train_config = config.TrainConfig()
+
         exp_name = checkpoint_path.stem
 
-    print(f"\nLoading model from: {checkpoint_path}")
-    model, checkpoint = load_model(str(checkpoint_path), model_config)
+    is_patch_level = (training_mode == "patch_level")
+    print(f"\nTraining mode: {training_mode}")
+
+    print(f"Loading model from: {checkpoint_path}")
+    model, checkpoint = load_model(str(checkpoint_path), model_config, patch_level=is_patch_level)
     model = model.to(device)
     print(f"Model loaded successfully")
 
@@ -266,12 +380,18 @@ def main():
     if 'val_loss' in checkpoint:
         print(f"Validation loss: {checkpoint['val_loss']:.4f}")
 
-    # Load data
+    # Load data based on training mode
     print("\nLoading data...")
-    train_loader, val_loader, test_loader, dataset_info = get_dataloaders(
-        batch_size=16,
-        num_workers=4
-    )
+    if is_patch_level:
+        train_loader, val_loader, test_loader, dataset_info = get_patch_level_dataloaders(
+            batch_size=64,
+            num_workers=4
+        )
+    else:
+        train_loader, val_loader, test_loader, dataset_info = get_dataloaders(
+            batch_size=16,
+            num_workers=4
+        )
 
     # Select data split
     if args.split == "train":
@@ -286,8 +406,17 @@ def main():
 
     print(f"Evaluating on {split_name} set ({len(data_loader.dataset)} samples)...")
 
-    # Evaluate
-    y_true, y_pred, metrics, all_info = evaluate_model(model, data_loader, device)
+    # Evaluate based on training mode
+    if is_patch_level:
+        # Patch-level evaluation with aggregation
+        y_true, y_pred, metrics, all_info = evaluate_patch_level(
+            model, data_loader, device,
+            aggregation=train_config.patch_level_aggregation,
+            trim_ratio=train_config.patch_level_trim_ratio
+        )
+    else:
+        # City-level evaluation (standard)
+        y_true, y_pred, metrics, all_info = evaluate_model(model, data_loader, device)
 
     # Output directory
     output_dir = args.output_dir or str(config.RESULT_DIR / f"eval_{exp_name}")

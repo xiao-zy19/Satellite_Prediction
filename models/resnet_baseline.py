@@ -136,9 +136,13 @@ class AttentionAggregator(nn.Module):
 class ResNetBaseline(nn.Module):
     """
     ResNet baseline model for population growth prediction.
+
+    Supports two training modes:
+    - city_level: input (batch, num_patches, 64, H, W) -> aggregate -> output (batch, 1)
+    - patch_level: input (batch, 64, H, W) -> output (batch, 1)
     """
 
-    def __init__(self, model_config=None):
+    def __init__(self, model_config=None, patch_level: bool = False):
         super().__init__()
 
         if model_config is None:
@@ -146,6 +150,7 @@ class ResNetBaseline(nn.Module):
 
         self.config = model_config
         self.aggregation_type = model_config.aggregation
+        self.patch_level = patch_level  # If True, expect single patch input
 
         # Encoder
         self.encoder = ResNetEncoder(
@@ -155,8 +160,8 @@ class ResNetBaseline(nn.Module):
         )
         feature_dim = self.encoder.output_dim
 
-        # Aggregation
-        if self.aggregation_type == "attention":
+        # Aggregation (only used in city_level mode)
+        if self.aggregation_type == "attention" and not patch_level:
             self.aggregator = AttentionAggregator(feature_dim, model_config.hidden_dim // 2)
         else:
             self.aggregator = None
@@ -184,22 +189,29 @@ class ResNetBaseline(nn.Module):
     def forward(self, x):
         """
         Args:
-            x: (batch, num_patches, 64, H, W)
+            x: (batch, num_patches, 64, H, W) for city_level mode
+               (batch, 64, H, W) for patch_level mode
         Returns:
             (batch, 1)
         """
         # Encode
-        features = self.encoder(x)  # (batch, num_patches, feature_dim)
+        features = self.encoder(x)
 
-        # Aggregate
-        if self.aggregation_type == "mean":
-            aggregated = features.mean(dim=1)
-        elif self.aggregation_type == "attention":
-            aggregated = self.aggregator(features)
-        elif self.aggregation_type == "trimmed_mean":
-            aggregated = self._trimmed_mean(features)
+        if self.patch_level or x.dim() == 4:
+            # Patch-level mode: features is (batch, feature_dim)
+            # No aggregation needed
+            aggregated = features
         else:
-            aggregated = features.mean(dim=1)
+            # City-level mode: features is (batch, num_patches, feature_dim)
+            # Aggregate across patches
+            if self.aggregation_type == "mean":
+                aggregated = features.mean(dim=1)
+            elif self.aggregation_type == "attention":
+                aggregated = self.aggregator(features)
+            elif self.aggregation_type == "trimmed_mean":
+                aggregated = self._trimmed_mean(features)
+            else:
+                aggregated = features.mean(dim=1)
 
         # Predict
         output = self.regression_head(aggregated)

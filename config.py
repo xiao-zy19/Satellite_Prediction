@@ -12,12 +12,18 @@ from typing import List, Optional
 # Path Configuration
 # =============================================================================
 BASE_DIR = Path("/home/xiaozhenyu/degree_essay/Alpha_Earth/AEF_Data")
-DATA_DIR = BASE_DIR / "data"
+DATA_DIR = BASE_DIR / "data_local"  # Local disk for faster I/O (was: "data" on NAS)
 PROJECT_DIR = BASE_DIR / "Baseline_Pretrain"
 
 # Input data paths
-SATELLITE_DIR = DATA_DIR / "city_satellite_tiles"
+SATELLITE_DIR = DATA_DIR / "city_satellite_tiles"  # Original TIFF files
+PATCHES_DIR = DATA_DIR / "city_patches"  # Preprocessed patches (all 25 patches in one npy)
+INDIVIDUAL_PATCHES_DIR = DATA_DIR / "city_individual_patches"  # Individual patch files
 POPULATION_DATA = Path("/home/xiaozhenyu/degree_essay/Alpha_Earth/人口数据/人口自然增长率_2018-2024_filtered-empty.xlsx")
+
+# Use preprocessed patches for faster loading
+USE_PREPROCESSED_PATCHES = True
+USE_INDIVIDUAL_PATCHES = True  # Use individual patch files (fastest for patch-level training)
 
 # Output paths
 CHECKPOINT_DIR = PROJECT_DIR / "checkpoints"
@@ -121,7 +127,7 @@ class TrainConfig:
     num_epochs: int = 100
     learning_rate: float = 1e-4
     weight_decay: float = 1e-4
-    patience: int = 50
+    patience: int = 60  # Increased for cosine_warm_restarts scheduler
 
     # Scheduler
     scheduler: str = "cosine_warm_restarts"
@@ -135,6 +141,15 @@ class TrainConfig:
     finetune_lr: float = 1e-4
     freeze_encoder_epochs: int = 5  # Freeze encoder for first N epochs during finetune
 
+    # Training mode: "city_level" or "patch_level"
+    # city_level: 25 patches as one sample -> model aggregates internally -> 1 prediction
+    # patch_level: each patch is independent sample -> aggregate predictions at inference
+    training_mode: str = "city_level"
+
+    # Patch-level specific settings (for inference aggregation)
+    patch_level_aggregation: str = "trimmed_mean"  # mean, median, trimmed_mean
+    patch_level_trim_ratio: float = 0.1  # For trimmed_mean
+
 
 @dataclass
 class ExperimentConfig:
@@ -145,8 +160,8 @@ class ExperimentConfig:
     pretrain_config: object = None  # SimCLR or MAE config
     use_pretrain: bool = False
     device: str = "cuda"
-    num_workers: int = 4
-    wandb_enabled: bool = True
+    num_workers: int = 4  # Optimal for local disk I/O
+    wandb_enabled: bool = True  # Enabled for experiment tracking
     wandb_project: str = "population-pretrain-comparison"
 
 
@@ -155,6 +170,9 @@ class ExperimentConfig:
 # =============================================================================
 
 EXPERIMENTS = {
+    # ==========================================================================
+    # City-level training (original method: 25 patches -> 1 prediction)
+    # ==========================================================================
     # Baseline models (no pretraining)
     "mlp_baseline": ExperimentConfig(
         exp_name="mlp_baseline",
@@ -196,6 +214,59 @@ EXPERIMENTS = {
         pretrain_config=MAEConfig(encoder_type="light_cnn"),
         use_pretrain=True
     ),
+
+    # ==========================================================================
+    # Patch-level training (paper method: each patch is independent sample)
+    # Training: each patch predicts city's growth rate independently
+    # Inference: aggregate all patch predictions using trimmed_mean
+    # ==========================================================================
+    "mlp_patch_level": ExperimentConfig(
+        exp_name="mlp_patch_level",
+        model_config=MLPConfig(),
+        train_config=TrainConfig(
+            training_mode="patch_level",
+            batch_size=64,  # Can use larger batch since each sample is smaller
+            patch_level_aggregation="trimmed_mean",
+            patch_level_trim_ratio=0.1
+        ),
+        use_pretrain=False
+    ),
+    "light_cnn_patch_level": ExperimentConfig(
+        exp_name="light_cnn_patch_level",
+        model_config=LightCNNConfig(),
+        train_config=TrainConfig(
+            training_mode="patch_level",
+            batch_size=64,
+            patch_level_aggregation="trimmed_mean",
+            patch_level_trim_ratio=0.1
+        ),
+        use_pretrain=False
+    ),
+    "resnet_patch_level": ExperimentConfig(
+        exp_name="resnet_patch_level",
+        model_config=ResNetConfig(use_pretrained=False),
+        train_config=TrainConfig(
+            training_mode="patch_level",
+            batch_size=32,
+            patch_level_aggregation="trimmed_mean",
+            patch_level_trim_ratio=0.1
+        ),
+        use_pretrain=False
+    ),
+
+    # Patch-level with SimCLR pretraining
+    "simclr_cnn_patch_level": ExperimentConfig(
+        exp_name="simclr_cnn_patch_level",
+        model_config=LightCNNConfig(),
+        train_config=TrainConfig(
+            training_mode="patch_level",
+            batch_size=64,
+            patch_level_aggregation="trimmed_mean",
+            patch_level_trim_ratio=0.1
+        ),
+        pretrain_config=SimCLRConfig(encoder_type="light_cnn"),
+        use_pretrain=True
+    ),
 }
 
 
@@ -212,6 +283,10 @@ def print_config(config: ExperimentConfig):
     print(f"Experiment: {config.exp_name}")
     print("=" * 60)
     print(f"  Model: {config.model_config.name}")
+    print(f"  Training Mode: {config.train_config.training_mode}")
+    if config.train_config.training_mode == "patch_level":
+        print(f"  Patch Aggregation: {config.train_config.patch_level_aggregation}")
+        print(f"  Trim Ratio: {config.train_config.patch_level_trim_ratio}")
     print(f"  Use Pretrain: {config.use_pretrain}")
     if config.use_pretrain and config.pretrain_config:
         print(f"  Pretrain Method: {config.pretrain_config.name}")

@@ -118,11 +118,15 @@ class MLPModel(nn.Module):
 
     Architecture:
     1. PatchMLP: Encode each patch (global pool + MLP)
-    2. Aggregation: Combine patch features (mean/attention)
+    2. Aggregation: Combine patch features (mean/attention) - city_level mode only
     3. Regression head: Predict growth rate
+
+    Supports two training modes:
+    - city_level: input (batch, num_patches, 64, H, W) -> aggregate -> output (batch, 1)
+    - patch_level: input (batch, 64, H, W) -> output (batch, 1)
     """
 
-    def __init__(self, model_config=None):
+    def __init__(self, model_config=None, patch_level: bool = False):
         super().__init__()
 
         if model_config is None:
@@ -130,6 +134,7 @@ class MLPModel(nn.Module):
 
         self.config = model_config
         self.aggregation_type = model_config.aggregation
+        self.patch_level = patch_level  # If True, expect single patch input
 
         # Patch encoder
         self.encoder = PatchMLP(
@@ -140,8 +145,8 @@ class MLPModel(nn.Module):
         )
         feature_dim = self.encoder.output_dim
 
-        # Aggregation
-        if self.aggregation_type == "attention":
+        # Aggregation (only used in city_level mode)
+        if self.aggregation_type == "attention" and not patch_level:
             self.aggregator = AttentionAggregator(feature_dim)
         else:
             self.aggregator = None
@@ -166,22 +171,29 @@ class MLPModel(nn.Module):
     def forward(self, x):
         """
         Args:
-            x: (batch, num_patches, 64, H, W)
+            x: (batch, num_patches, 64, H, W) for city_level mode
+               (batch, 64, H, W) for patch_level mode
         Returns:
             (batch, 1)
         """
         # Encode patches
-        features = self.encoder(x)  # (batch, num_patches, feature_dim)
+        features = self.encoder(x)
 
-        # Aggregate
-        if self.aggregation_type == "mean":
-            aggregated = features.mean(dim=1)
-        elif self.aggregation_type == "attention":
-            aggregated = self.aggregator(features)
-        elif self.aggregation_type == "trimmed_mean":
-            aggregated = self._trimmed_mean(features)
+        if self.patch_level or x.dim() == 4:
+            # Patch-level mode: features is (batch, feature_dim)
+            # No aggregation needed
+            aggregated = features
         else:
-            aggregated = features.mean(dim=1)
+            # City-level mode: features is (batch, num_patches, feature_dim)
+            # Aggregate across patches
+            if self.aggregation_type == "mean":
+                aggregated = features.mean(dim=1)
+            elif self.aggregation_type == "attention":
+                aggregated = self.aggregator(features)
+            elif self.aggregation_type == "trimmed_mean":
+                aggregated = self._trimmed_mean(features)
+            else:
+                aggregated = features.mean(dim=1)
 
         # Predict
         output = self.regression_head(aggregated)
@@ -219,12 +231,14 @@ class MLPModel(nn.Module):
 
 if __name__ == "__main__":
     # Test model
-    print("Testing MLP model...")
+    print("=" * 60)
+    print("Testing MLP model (city_level mode)...")
+    print("=" * 60)
 
-    model = MLPModel()
+    model = MLPModel(patch_level=False)
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 
-    # Test forward pass
+    # Test forward pass - city level
     batch_size = 2
     num_patches = 25
     channels = 64
@@ -238,3 +252,20 @@ if __name__ == "__main__":
 
     print(f"Output shape: {output.shape}")
     print(f"Output: {output.squeeze().tolist()}")
+
+    print("\n" + "=" * 60)
+    print("Testing MLP model (patch_level mode)...")
+    print("=" * 60)
+
+    model_pl = MLPModel(patch_level=True)
+    print(f"Model parameters: {sum(p.numel() for p in model_pl.parameters()):,}")
+
+    # Test forward pass - patch level (single patch)
+    x_single = torch.randn(batch_size, channels, patch_size, patch_size)
+    print(f"Input shape: {x_single.shape}")
+
+    with torch.no_grad():
+        output_pl = model_pl(x_single)
+
+    print(f"Output shape: {output_pl.shape}")
+    print(f"Output: {output_pl.squeeze().tolist()}")

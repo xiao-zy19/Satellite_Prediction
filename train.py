@@ -27,7 +27,7 @@ import matplotlib.pyplot as plt
 
 import config
 from config import get_experiment_config, print_config, ExperimentConfig
-from dataset import get_dataloaders, get_pretrain_dataloader
+from dataset import get_dataloaders, get_pretrain_dataloader, get_patch_level_dataloaders
 from models import MLPModel, LightCNN, ResNetBaseline
 from pretrain.simclr import pretrain_simclr
 from pretrain.mae import pretrain_mae
@@ -46,14 +46,19 @@ except ImportError:
     print("Warning: wandb not installed")
 
 
-def create_model(model_config):
-    """Create model based on configuration."""
+def create_model(model_config, patch_level: bool = False):
+    """Create model based on configuration.
+
+    Args:
+        model_config: Model configuration
+        patch_level: If True, create model for patch-level training (no internal aggregation)
+    """
     if model_config.name == "mlp":
-        return MLPModel(model_config)
+        return MLPModel(model_config, patch_level=patch_level)
     elif model_config.name == "light_cnn":
-        return LightCNN(model_config)
+        return LightCNN(model_config, patch_level=patch_level)
     elif model_config.name == "resnet":
-        return ResNetBaseline(model_config)
+        return ResNetBaseline(model_config, patch_level=patch_level)
     else:
         raise ValueError(f"Unknown model: {model_config.name}")
 
@@ -68,6 +73,7 @@ def init_wandb(exp_config: ExperimentConfig, dataset_info: dict) -> bool:
         "model": exp_config.model_config.name,
         "use_pretrain": exp_config.use_pretrain,
         "pretrain_method": exp_config.pretrain_config.name if exp_config.pretrain_config else "none",
+        "training_mode": exp_config.train_config.training_mode,
         "batch_size": exp_config.train_config.batch_size,
         "learning_rate": exp_config.train_config.learning_rate,
         "num_epochs": exp_config.train_config.num_epochs,
@@ -348,19 +354,34 @@ def run_experiment(exp_name: str, gpu_id: int = 3):
     device = get_device(exp_config.device)
     logger.info(f"Using device: {device}")
 
+    # Determine training mode
+    training_mode = exp_config.train_config.training_mode
+    is_patch_level = (training_mode == "patch_level")
+    logger.info(f"Training mode: {training_mode}")
+
     # Load data
     logger.info("Loading data...")
-    train_loader, val_loader, test_loader, dataset_info = get_dataloaders(
-        batch_size=exp_config.train_config.batch_size,
-        num_workers=exp_config.num_workers
-    )
+    if is_patch_level:
+        # Patch-level training: each patch is an independent sample
+        train_loader, val_loader, test_loader, dataset_info = get_patch_level_dataloaders(
+            batch_size=exp_config.train_config.batch_size,
+            num_workers=exp_config.num_workers
+        )
+        logger.info(f"Patch-level mode: {dataset_info['num_train_patches']} training patches "
+                    f"from {dataset_info['num_train']} city-year samples")
+    else:
+        # City-level training: 25 patches per sample, aggregated internally
+        train_loader, val_loader, test_loader, dataset_info = get_dataloaders(
+            batch_size=exp_config.train_config.batch_size,
+            num_workers=exp_config.num_workers
+        )
 
     # Init wandb
     use_wandb = init_wandb(exp_config, dataset_info)
 
     # Create model
     logger.info("Creating model...")
-    model = create_model(exp_config.model_config)
+    model = create_model(exp_config.model_config, patch_level=is_patch_level)
     logger.info(f"Model parameters: {count_parameters(model):,}")
 
     # Self-supervised pretraining if needed
@@ -479,7 +500,8 @@ def run_experiment(exp_name: str, gpu_id: int = 3):
         'best_epoch': trainer.best_epoch,
         'model_params': count_parameters(model),
         'use_pretrain': exp_config.use_pretrain,
-        'pretrain_method': exp_config.pretrain_config.name if exp_config.pretrain_config else None
+        'pretrain_method': exp_config.pretrain_config.name if exp_config.pretrain_config else None,
+        'training_mode': training_mode
     }
 
     results_path = os.path.join(config.RESULT_DIR, f'{exp_name}_results.pkl')

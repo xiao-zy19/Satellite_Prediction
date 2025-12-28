@@ -19,6 +19,7 @@ class CityDataset(Dataset):
     Dataset for city satellite data with population growth rate labels.
 
     Supports both supervised learning and self-supervised pretraining.
+    Now supports preprocessed patches (npy files) for faster loading.
     """
 
     def __init__(
@@ -28,16 +29,18 @@ class CityDataset(Dataset):
         num_patches_per_dim: int = config.NUM_PATCHES_PER_DIM,
         augment: bool = False,
         return_raw: bool = False,
-        contrastive: bool = False
+        contrastive: bool = False,
+        use_preprocessed: bool = True
     ):
         """
         Args:
-            samples: List of dicts with keys: 'city', 'year', 'tiff_path', 'growth_rate'
+            samples: List of dicts with keys: 'city', 'year', 'tiff_path'/'npy_path', 'growth_rate'
             patch_size: Size of each patch in pixels
             num_patches_per_dim: Number of patches per dimension
             augment: Whether to apply data augmentation
             return_raw: Return raw data without patch extraction (for MAE)
             contrastive: Return two augmented views (for SimCLR)
+            use_preprocessed: Use preprocessed npy files if available
         """
         self.samples = samples
         self.patch_size = patch_size
@@ -45,6 +48,7 @@ class CityDataset(Dataset):
         self.augment = augment
         self.return_raw = return_raw
         self.contrastive = contrastive
+        self.use_preprocessed = use_preprocessed and config.USE_PREPROCESSED_PATCHES
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -52,27 +56,30 @@ class CityDataset(Dataset):
     def __getitem__(self, idx: int):
         sample = self.samples[idx]
 
-        # Load TIFF data
-        with rasterio.open(sample['tiff_path']) as src:
-            data = src.read().astype(np.float32)  # Shape: (64, H, W)
+        if self.use_preprocessed and 'npy_path' in sample:
+            # Load preprocessed patches (25, 64, 200, 200)
+            patches = np.load(sample['npy_path'])
+            # Normalize
+            patches = patches / 127.0
+            patches[patches < -1] = 0  # Handle nodata
+        else:
+            # Load TIFF data (fallback)
+            with rasterio.open(sample['tiff_path']) as src:
+                data = src.read().astype(np.float32)  # Shape: (64, H, W)
+            data[data == -128] = 0
+            data = data / 127.0
+            data = self._pad_to_full_size(data)
 
-        # Handle nodata (-128 for Alpha Earth)
-        data[data == -128] = 0
-        data = data / 127.0  # Normalize to [-1, 1]
-
-        # Pad to full size if needed
-        data = self._pad_to_full_size(data)
+            if self.return_raw:
+                patches = data
+            else:
+                patches = self._extract_patches(data)
 
         if self.return_raw:
-            # Return full tile for MAE
-            patches = torch.FloatTensor(data)
+            patches = torch.FloatTensor(patches)
             patches = self._normalize_tensor(patches)
         else:
-            # Extract patches
-            patches = self._extract_patches(data)
-
             if self.contrastive:
-                # Return two augmented views for SimCLR
                 view1 = self._augment_patches(patches.copy())
                 view2 = self._augment_patches(patches.copy())
                 view1 = torch.FloatTensor(view1)
@@ -92,7 +99,6 @@ class CityDataset(Dataset):
             patches = torch.FloatTensor(patches)
             patches = self._normalize_tensor(patches)
 
-        # Label
         label = torch.FloatTensor([sample['growth_rate']])
 
         info = {
@@ -280,14 +286,203 @@ class PretrainDataset(Dataset):
         return patches
 
 
+class PatchLevelDataset(Dataset):
+    """
+    Patch-level dataset where each patch is an independent sample.
+
+    This follows the paper's approach:
+    - Each patch from a city shares the city's growth rate label
+    - During training: each patch is treated as an independent sample
+    - During inference: predictions from all patches are aggregated
+
+    This increases the effective training data by NUM_PATCHES_TOTAL (25x).
+    Now supports preprocessed patches (npy files) for faster loading.
+    """
+
+    def __init__(
+        self,
+        samples: List[Dict],
+        patch_size: int = config.PATCH_SIZE_PIXELS,
+        num_patches_per_dim: int = config.NUM_PATCHES_PER_DIM,
+        augment: bool = False,
+        use_preprocessed: bool = True
+    ):
+        """
+        Args:
+            samples: List of dicts with keys: 'city', 'year', 'tiff_path'/'npy_path', 'growth_rate'
+            patch_size: Size of each patch in pixels
+            num_patches_per_dim: Number of patches per dimension
+            augment: Whether to apply data augmentation
+            use_preprocessed: Use preprocessed npy files if available
+        """
+        self.samples = samples
+        self.patch_size = patch_size
+        self.num_patches_per_dim = num_patches_per_dim
+        self.num_patches_total = num_patches_per_dim ** 2
+        self.augment = augment
+        self.use_preprocessed = use_preprocessed and config.USE_PREPROCESSED_PATCHES
+
+        # Build index mapping: global_idx -> (sample_idx, patch_idx)
+        self.index_mapping = []
+        for sample_idx, sample in enumerate(samples):
+            for patch_idx in range(self.num_patches_total):
+                self.index_mapping.append((sample_idx, patch_idx))
+
+        print(f"PatchLevelDataset: {len(samples)} city-years -> {len(self.index_mapping)} patch samples")
+
+    def __len__(self) -> int:
+        return len(self.index_mapping)
+
+    def __getitem__(self, idx: int):
+        sample_idx, patch_idx = self.index_mapping[idx]
+        sample = self.samples[sample_idx]
+
+        # Try individual patch file first (fastest)
+        if self.use_preprocessed and 'individual_patch_dir' in sample:
+            patch_path = Path(sample['individual_patch_dir']) / f"{sample['base_name']}_p{patch_idx:02d}.npy"
+            if patch_path.exists():
+                patch = np.load(str(patch_path))
+                patch = patch / 127.0
+                patch[patch < -1] = 0
+            else:
+                # Fallback to all-patches npy
+                if 'npy_path' in sample:
+                    all_patches = np.load(sample['npy_path'])
+                    patch = all_patches[patch_idx]
+                    patch = patch / 127.0
+                    patch[patch < -1] = 0
+                else:
+                    # Fallback to TIFF
+                    with rasterio.open(sample['tiff_path']) as src:
+                        data = src.read().astype(np.float32)
+                    data[data == -128] = 0
+                    data = data / 127.0
+                    data = self._pad_to_full_size(data)
+                    patch = self._extract_single_patch(data, patch_idx)
+        elif self.use_preprocessed and 'npy_path' in sample:
+            all_patches = np.load(sample['npy_path'])
+            patch = all_patches[patch_idx]
+            patch = patch / 127.0
+            patch[patch < -1] = 0
+        else:
+            # Load TIFF data (fallback)
+            with rasterio.open(sample['tiff_path']) as src:
+                data = src.read().astype(np.float32)
+            data[data == -128] = 0
+            data = data / 127.0
+            data = self._pad_to_full_size(data)
+            patch = self._extract_single_patch(data, patch_idx)
+
+        if self.augment:
+            patch = self._augment_patch(patch)
+
+        patch = torch.FloatTensor(patch)
+        patch = self._normalize_tensor(patch)
+
+        label = torch.FloatTensor([sample['growth_rate']])
+
+        info = {
+            'city': sample['city'],
+            'year': sample['year'],
+            'sample_idx': sample_idx,
+            'patch_idx': patch_idx,
+            'global_idx': idx
+        }
+
+        return patch, label, info
+
+    def _pad_to_full_size(self, data: np.ndarray, target_size: int = config.FULL_SIZE) -> np.ndarray:
+        """Pad data to target size if smaller."""
+        n_bands, h, w = data.shape
+
+        if h >= target_size and w >= target_size:
+            return data[:, :target_size, :target_size]
+
+        padded = np.zeros((n_bands, target_size, target_size), dtype=data.dtype)
+        h_start = (target_size - h) // 2
+        w_start = (target_size - w) // 2
+        padded[:, h_start:h_start+h, w_start:w_start+w] = data
+
+        return padded
+
+    def _extract_single_patch(self, data: np.ndarray, patch_idx: int) -> np.ndarray:
+        """Extract a single patch by index."""
+        ps = self.patch_size
+        n = self.num_patches_per_dim
+
+        # Convert linear index to 2D position
+        i = patch_idx // n  # row
+        j = patch_idx % n   # column
+
+        y_start = i * ps
+        x_start = j * ps
+        patch = data[:, y_start:y_start+ps, x_start:x_start+ps]
+
+        return patch  # (64, 200, 200)
+
+    def _normalize_tensor(self, patch: torch.Tensor) -> torch.Tensor:
+        """Normalize patch per channel."""
+        # patch: (64, H, W)
+        mean = patch.mean(dim=(1, 2), keepdim=True)
+        std = patch.std(dim=(1, 2), keepdim=True) + 1e-8
+        return (patch - mean) / std
+
+    def _augment_patch(self, patch: np.ndarray) -> np.ndarray:
+        """Apply data augmentation to a single patch."""
+        # patch: (64, H, W)
+
+        # Random horizontal flip
+        if random.random() > 0.5:
+            patch = patch[:, :, ::-1].copy()
+
+        # Random vertical flip
+        if random.random() > 0.5:
+            patch = patch[:, ::-1, :].copy()
+
+        # Random 90-degree rotation
+        if random.random() > 0.5:
+            k = random.randint(1, 3)
+            patch = np.rot90(patch, k, axes=(1, 2)).copy()
+
+        # Random Gaussian noise
+        if random.random() > 0.5:
+            noise = np.random.normal(0, 0.05, patch.shape).astype(np.float32)
+            patch = patch + noise
+
+        return patch
+
+    def get_city_year_indices(self, sample_idx: int) -> List[int]:
+        """Get all global indices for a specific city-year sample."""
+        start_idx = sample_idx * self.num_patches_total
+        return list(range(start_idx, start_idx + self.num_patches_total))
+
+
 def load_population_data(excel_path: Path = config.POPULATION_DATA) -> pd.DataFrame:
     """Load population growth rate data from Excel file."""
     df = pd.read_excel(excel_path)
     return df
 
 
-def find_satellite_data(satellite_dir: Path = config.SATELLITE_DIR) -> Dict[str, Dict[int, Path]]:
-    """Find all available satellite TIFF files."""
+def find_satellite_data(
+    satellite_dir: Path = config.SATELLITE_DIR,
+    patches_dir: Path = None,
+    individual_patches_dir: Path = None
+) -> Dict[str, Dict[int, Dict]]:
+    """
+    Find all available satellite data files.
+
+    Returns dict: city_name -> year -> {
+        'tiff_path': Path,
+        'npy_path': Path (optional),
+        'individual_patch_dir': Path (optional),
+        'base_name': str
+    }
+    """
+    if patches_dir is None:
+        patches_dir = config.PATCHES_DIR if hasattr(config, 'PATCHES_DIR') else None
+    if individual_patches_dir is None:
+        individual_patches_dir = config.INDIVIDUAL_PATCHES_DIR if hasattr(config, 'INDIVIDUAL_PATCHES_DIR') else None
+
     satellite_data = {}
 
     for province_dir in satellite_dir.iterdir():
@@ -304,7 +499,26 @@ def find_satellite_data(satellite_dir: Path = config.SATELLITE_DIR) -> Dict[str,
             for tiff_file in city_dir.glob('*.tiff'):
                 try:
                     year = int(tiff_file.stem.split('_')[0])
-                    city_data[year] = tiff_file
+                    file_info = {
+                        'tiff_path': tiff_file,
+                        'base_name': tiff_file.stem  # e.g., "2018_北京市"
+                    }
+
+                    # Check for individual patches directory (fastest)
+                    if individual_patches_dir and individual_patches_dir.exists():
+                        ind_dir = individual_patches_dir / province_dir.name / city_name
+                        # Check if at least one patch exists
+                        test_patch = ind_dir / f"{tiff_file.stem}_p00.npy"
+                        if test_patch.exists():
+                            file_info['individual_patch_dir'] = ind_dir
+
+                    # Check for all-patches npy file
+                    if patches_dir and patches_dir.exists():
+                        npy_path = patches_dir / province_dir.name / city_name / f"{tiff_file.stem}.npy"
+                        if npy_path.exists():
+                            file_info['npy_path'] = npy_path
+
+                    city_data[year] = file_info
                 except (ValueError, IndexError):
                     continue
 
@@ -316,7 +530,7 @@ def find_satellite_data(satellite_dir: Path = config.SATELLITE_DIR) -> Dict[str,
 
 def create_dataset_samples(
     population_df: pd.DataFrame,
-    satellite_data: Dict[str, Dict[int, Path]]
+    satellite_data: Dict[str, Dict[int, Dict]]
 ) -> List[Dict]:
     """Create list of valid samples with both satellite and population data."""
     samples = []
@@ -328,17 +542,25 @@ def create_dataset_samples(
     for city in common_cities:
         city_row = population_df[population_df['城市名称'] == city].iloc[0]
 
-        for year, tiff_path in satellite_data[city].items():
+        for year, file_info in satellite_data[city].items():
             year_col = str(year)
             if year_col in population_df.columns:
                 growth_rate = city_row.get(year_col)
                 if pd.notna(growth_rate):
-                    samples.append({
+                    sample = {
                         'city': city,
                         'year': year,
-                        'tiff_path': str(tiff_path),
-                        'growth_rate': float(growth_rate)
-                    })
+                        'tiff_path': str(file_info['tiff_path']),
+                        'growth_rate': float(growth_rate),
+                        'base_name': file_info.get('base_name', f"{year}_{city}")
+                    }
+                    # Add npy_path if available
+                    if 'npy_path' in file_info:
+                        sample['npy_path'] = str(file_info['npy_path'])
+                    # Add individual_patch_dir if available
+                    if 'individual_patch_dir' in file_info:
+                        sample['individual_patch_dir'] = str(file_info['individual_patch_dir'])
+                    samples.append(sample)
 
     return samples
 
@@ -477,19 +699,121 @@ def get_pretrain_dataloader(
     return loader
 
 
+def get_patch_level_dataloaders(
+    batch_size: int = 64,
+    num_workers: int = 4,
+    augment_train: bool = True
+) -> Tuple[DataLoader, DataLoader, DataLoader, Dict]:
+    """
+    Create patch-level dataloaders where each patch is an independent sample.
+
+    This follows the paper's method:
+    - Training: each patch is an independent sample with city's growth rate
+    - Validation/Test: same as training, but predictions will be aggregated at evaluation
+
+    Returns:
+        train_loader, val_loader, test_loader, dataset_info
+    """
+    print("Loading population data...")
+    pop_df = load_population_data()
+
+    print("Finding satellite data...")
+    sat_data = find_satellite_data()
+
+    print("Creating samples...")
+    samples = create_dataset_samples(pop_df, sat_data)
+    print(f"Total valid city-year samples: {len(samples)}")
+
+    print("Splitting dataset (by city)...")
+    train_samples, val_samples, test_samples = split_dataset(samples)
+
+    print(f"  Train: {len(train_samples)} city-years -> {len(train_samples) * config.NUM_PATCHES_TOTAL} patches")
+    print(f"  Val: {len(val_samples)} city-years -> {len(val_samples) * config.NUM_PATCHES_TOTAL} patches")
+    print(f"  Test: {len(test_samples)} city-years -> {len(test_samples) * config.NUM_PATCHES_TOTAL} patches")
+
+    # Use PatchLevelDataset for training
+    train_dataset = PatchLevelDataset(train_samples, augment=augment_train)
+    val_dataset = PatchLevelDataset(val_samples, augment=False)
+    test_dataset = PatchLevelDataset(test_samples, augment=False)
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=True,
+        drop_last=True
+    )
+
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True
+    )
+
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True
+    )
+
+    dataset_info = {
+        'num_train': len(train_samples),
+        'num_val': len(val_samples),
+        'num_test': len(test_samples),
+        'num_train_patches': len(train_dataset),
+        'num_val_patches': len(val_dataset),
+        'num_test_patches': len(test_dataset),
+        'train_samples': train_samples,
+        'val_samples': val_samples,
+        'test_samples': test_samples,
+        'num_patches_per_city': config.NUM_PATCHES_TOTAL,
+        'training_mode': 'patch_level'
+    }
+
+    return train_loader, val_loader, test_loader, dataset_info
+
+
 if __name__ == "__main__":
     # Test dataset loading
-    print("Testing dataset loading...")
+    print("=" * 60)
+    print("Testing CITY-LEVEL dataset (original method)...")
+    print("=" * 60)
 
     train_loader, val_loader, test_loader, info = get_dataloaders(batch_size=2, num_workers=0)
 
     for patches, labels, meta in train_loader:
-        print(f"Patches shape: {patches.shape}")
-        print(f"Labels shape: {labels.shape}")
+        print(f"Patches shape: {patches.shape}")  # (batch, 25, 64, 200, 200)
+        print(f"Labels shape: {labels.shape}")     # (batch, 1)
         print(f"Cities: {meta['city']}")
         break
 
-    print("\nTesting pretrain dataset...")
+    print("\n" + "=" * 60)
+    print("Testing PATCH-LEVEL dataset (paper method)...")
+    print("=" * 60)
+
+    train_loader_pl, val_loader_pl, test_loader_pl, info_pl = get_patch_level_dataloaders(
+        batch_size=4, num_workers=0
+    )
+
+    for patch, label, meta in train_loader_pl:
+        print(f"Patch shape: {patch.shape}")       # (batch, 64, 200, 200)
+        print(f"Label shape: {label.shape}")       # (batch, 1)
+        print(f"Cities: {meta['city']}")
+        print(f"Patch indices: {meta['patch_idx']}")
+        break
+
+    print(f"\nDataset info:")
+    print(f"  City-level samples: {info_pl['num_train']} train, {info_pl['num_val']} val, {info_pl['num_test']} test")
+    print(f"  Patch-level samples: {info_pl['num_train_patches']} train, {info_pl['num_val_patches']} val, {info_pl['num_test_patches']} test")
+
+    print("\n" + "=" * 60)
+    print("Testing pretrain dataset...")
+    print("=" * 60)
     pretrain_loader = get_pretrain_dataloader(batch_size=2, num_workers=0)
 
     for view1, view2 in pretrain_loader:
