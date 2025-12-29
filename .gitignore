@@ -19,8 +19,8 @@ logs/
 wandb/
 *.log
 
-# Results data (optional - remove if you want to keep)
-# results/
+# Results data (pickle files are large and can be regenerated)
+results/*.pkl
 
 # IDE
 .vscode/

@@ -16,8 +16,6 @@ Baseline_Pretrain/
 ├── utils.py                       # 工具函数（指标计算、日志、检查点等）
 ├── preprocess_patches.py          # 数据预处理：TIFF → 25个patch的npy文件
 ├── preprocess_individual_patches.py  # 数据预处理：TIFF → 25个独立patch文件
-├── run_all_experiments.sh         # 批量运行所有实验
-├── start_experiments.sh           # 使用tmux启动实验
 ├── requirements.txt               # 项目依赖
 ├── models/
 │   ├── __init__.py
@@ -28,11 +26,17 @@ Baseline_Pretrain/
 │   ├── __init__.py
 │   ├── simclr.py                  # SimCLR 对比学习预训练
 │   └── mae.py                     # MAE 掩码自编码器预训练
-├── checkpoints/                   # 模型检查点
-├── logs/                          # 训练日志
-│   └── experiment_runs/           # 实验运行日志
-├── results/                       # 实验结果
-└── wandb/                         # Wandb 日志
+├── scripts/                       # 实验运行脚本
+│   ├── run_all_experiments.sh     # 串行运行所有实验
+│   ├── run_all_experiments_parallel.sh  # 并行运行实验
+│   ├── run_experiments.sh         # 灵活实验脚本
+│   ├── run_patch_experiments.sh   # Patch-level 实验
+│   ├── run_patch_level.sh         # Patch-level 单实验
+│   └── start_experiments.sh       # tmux 启动实验
+├── checkpoints/                   # 模型检查点 (gitignore)
+├── logs/                          # 训练日志 (gitignore)
+├── results/                       # 实验结果 (*.pkl gitignore)
+└── wandb/                         # Wandb 日志 (gitignore)
 ```
 
 ---
@@ -110,11 +114,13 @@ python compare_results.py
 
 ### 预处理格式
 
-| 格式 | 路径 | 形状 | 用途 |
-|-----|------|------|------|
-| 原始 TIFF | `city_satellite_tiles/` | (64, 1000, 1000) | 原始数据 |
-| 合并 NPY | `city_patches/` | (25, 64, 200, 200) | City-level 训练 |
-| 独立 NPY | `city_individual_patches/` | (64, 200, 200) × 25 | Patch-level 训练 |
+| 格式 | 路径 | 形状 | 存储格式 | 用途 |
+|-----|------|------|---------|------|
+| 原始 TIFF | `city_satellite_tiles/` | (64, 1000, 1000) | int8 | 原始数据 |
+| 合并 NPY | `city_patches/` | (25, 64, 200, 200) | int8 | City-level 训练 |
+| 独立 NPY | `city_individual_patches/` | (64, 200, 200) × 25 | int8 | Patch-level 训练 |
+
+> **注意**: 预处理脚本保持 int8 格式存储，相比 float32 节省 4 倍存储空间。加载时自动转换为 float32 并归一化。
 
 ---
 
@@ -307,6 +313,11 @@ pretrain_epochs = 50
 pretrain_lr = 1e-3
 freeze_encoder_epochs = 5
 
+# 数据加载优化
+num_workers = 8                # DataLoader 并行加载进程数
+persistent_workers = True      # 保持 worker 进程存活
+prefetch_factor = 2            # 预加载批次数
+
 # 数据划分
 TRAIN_RATIO = 0.65
 VAL_RATIO = 0.15
@@ -392,7 +403,7 @@ python preprocess_individual_patches.py
 
 ```bash
 # 启动3个并行实验（推荐）
-bash start_experiments.sh
+bash scripts/start_experiments.sh
 
 # 查看实验
 tmux attach -t exp_all
@@ -403,8 +414,11 @@ tmux attach -t exp_all
 ### 运行所有11个实验
 
 ```bash
-# 分4批运行所有实验
-./run_all_experiments.sh
+# 串行运行所有实验（简单可靠）
+./scripts/run_all_experiments.sh
+
+# 或并行运行（更快但资源消耗大）
+./scripts/run_all_experiments_parallel.sh
 ```
 
 ---
@@ -415,6 +429,7 @@ tmux attach -t exp_all
 
 实验自动记录到 Wandb（需要登录）:
 - 项目: `population-pretrain-comparison`
+- 命名格式: `{exp_name}_{MMDD_HHMM}` (自动添加时间戳便于查找)
 - 记录: 训练/验证 loss、Pearson r、R²、MAE、学习率
 
 查看: https://wandb.ai/xiao-zy19/population-pretrain-comparison
@@ -533,20 +548,28 @@ wandb>=0.15.0
 
 ## 更新日志
 
-### v2.1 (2024-12-28)
+### v2.2 (2025-12-29)
+- **数据格式优化**: 预处理脚本保持 int8 格式，存储空间减少 4 倍
+- **数据加载优化**: 启用 `persistent_workers` 和 `prefetch_factor` 加速训练
+- **Wandb 改进**: 实验名称自动添加时间戳 `{exp_name}_{MMDD_HHMM}`
+- **性能调优**: `num_workers` 默认值从 4 提升到 8
+- **项目结构优化**: 实验脚本移至 `scripts/` 目录
+- **Gitignore 完善**: 添加 `results/*.pkl` 忽略规则
+
+### v2.1 (2025-12-28)
 - **启用 Wandb**: 实验自动记录到 wandb 平台
 - **新增 Patch-level 训练模式**: 支持 `mlp_patch_level`, `light_cnn_patch_level`, `resnet_patch_level`, `simclr_cnn_patch_level`
-- **新增预处理脚本**: `preprocess_individual_patches.py` 用于独立patch文件
+- **新增预处理脚本**: `preprocess_individual_patches.py` 用于独立 patch 文件
 - **更新文档**: 完善 README，添加详细的使用说明
 
-### v2.0 (2024-12-26)
+### v2.0 (2025-12-26)
 - **修复 MAE 权重迁移**: MAE 使用与下游模型相同的编码器架构
 - **新增检查点保存**: SimCLR 和 MAE 保存最佳预训练模型
 - **新增 evaluate.py**: 独立评估脚本，支持详细指标和可视化
 - **新增 compare_results.py**: 实验结果对比分析
 - **改进导入处理**: 使用绝对路径导入
 
-### v1.0 (2024-12-25)
+### v1.0 (2025-12-25)
 - 初始版本
 - 支持 MLP、LightCNN、ResNet 基线模型
 - 支持 SimCLR、MAE 自监督预训练

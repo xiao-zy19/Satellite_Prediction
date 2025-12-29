@@ -68,6 +68,11 @@ def init_wandb(exp_config: ExperimentConfig, dataset_info: dict) -> bool:
     if not exp_config.wandb_enabled or not WANDB_AVAILABLE:
         return False
 
+    # 在实验名称中加入时间戳，便于查找
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%m%d_%H%M")
+    run_name = f"{exp_config.exp_name}_{timestamp}"
+
     wandb_config = {
         "experiment": exp_config.exp_name,
         "model": exp_config.model_config.name,
@@ -84,7 +89,7 @@ def init_wandb(exp_config: ExperimentConfig, dataset_info: dict) -> bool:
 
     wandb.init(
         project=exp_config.wandb_project,
-        name=exp_config.exp_name,
+        name=run_name,
         config=wandb_config,
         reinit=True
     )

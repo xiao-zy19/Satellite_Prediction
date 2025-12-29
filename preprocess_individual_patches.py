@@ -16,20 +16,21 @@ NUM_PATCHES_PER_DIM = 5
 
 def process_single_tiff(args):
     tiff_path, output_dir = args
-    
+
     try:
         with rasterio.open(tiff_path) as src:
-            data = src.read().astype(np.float32)
-        
+            # 保持int8格式，不转换为float32！
+            data = src.read()  # int8
+
         if data.shape[1] < 1000 or data.shape[2] < 1000:
             return f"Skip {tiff_path}: size {data.shape}"
-        
+
         # Extract base name
         base_name = tiff_path.stem  # e.g., "2018_北京市"
         rel_path = tiff_path.relative_to(tiff_path.parent.parent.parent)
         out_base = output_dir / rel_path.parent
         out_base.mkdir(parents=True, exist_ok=True)
-        
+
         # Extract and save each patch
         for i in range(NUM_PATCHES_PER_DIM):
             for j in range(NUM_PATCHES_PER_DIM):
@@ -37,13 +38,13 @@ def process_single_tiff(args):
                 y_start = i * PATCH_SIZE
                 x_start = j * PATCH_SIZE
                 patch = data[:, y_start:y_start+PATCH_SIZE, x_start:x_start+PATCH_SIZE]
-                
-                # Save individual patch
+
+                # Save individual patch as int8 (比float32小4倍: 2.4MB vs 9.8MB)
                 patch_path = out_base / f"{base_name}_p{patch_idx:02d}.npy"
                 np.save(patch_path, patch)
-        
-        return f"OK"
-        
+
+        return f"OK ({data.dtype})"
+
     except Exception as e:
         return f"Error {tiff_path}: {e}"
 

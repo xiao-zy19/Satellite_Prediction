@@ -47,30 +47,30 @@ def extract_patches(data: np.ndarray, patch_size: int = PATCH_SIZE) -> np.ndarra
 def process_single_tiff(args):
     """Process a single TIFF file."""
     tiff_path, output_dir = args
-    
+
     try:
-        # Read TIFF
+        # Read TIFF - 保持int8格式，不转换为float32！
         with rasterio.open(tiff_path) as src:
-            data = src.read().astype(np.float32)  # (C, H, W)
-        
+            data = src.read()  # (C, H, W), 保持原始int8
+
         # Validate size
         if data.shape[1] != FULL_SIZE or data.shape[2] != FULL_SIZE:
             return f"Skip {tiff_path}: unexpected size {data.shape}"
-        
+
         # Extract patches
-        patches = extract_patches(data)  # (25, 64, 200, 200)
-        
+        patches = extract_patches(data)  # (25, 64, 200, 200), int8
+
         # Create output path
         # e.g., 北京/北京市/2018_北京市.tiff -> 北京/北京市/2018_北京市_patches.npy
         rel_path = tiff_path.relative_to(tiff_path.parent.parent.parent)
         output_path = output_dir / rel_path.with_suffix('.npy')
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Save as compressed npy
+
+        # Save as int8 npy (比float32小4倍: 61MB vs 244MB)
         np.save(output_path, patches)
-        
-        return f"OK: {output_path.name}"
-        
+
+        return f"OK: {output_path.name} ({patches.dtype})"
+
     except Exception as e:
         return f"Error {tiff_path}: {e}"
 

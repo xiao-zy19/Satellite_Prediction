@@ -160,7 +160,7 @@ class ExperimentConfig:
     pretrain_config: object = None  # SimCLR or MAE config
     use_pretrain: bool = False
     device: str = "cuda"
-    num_workers: int = 4  # Optimal for local disk I/O
+    num_workers: int = 8  # Optimal for local disk I/O
     wandb_enabled: bool = True  # Enabled for experiment tracking
     wandb_project: str = "population-pretrain-comparison"
 

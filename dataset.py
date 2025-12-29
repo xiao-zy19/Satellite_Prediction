@@ -58,10 +58,16 @@ class CityDataset(Dataset):
 
         if self.use_preprocessed and 'npy_path' in sample:
             # Load preprocessed patches (25, 64, 200, 200)
+            # 支持int8和float32格式
             patches = np.load(sample['npy_path'])
-            # Normalize
-            patches = patches / 127.0
-            patches[patches < -1] = 0  # Handle nodata
+            if patches.dtype == np.int8:
+                # int8格式: 先转float32再归一化
+                patches = patches.astype(np.float32) / 127.0
+                patches[patches < -1] = 0  # Handle nodata (-128)
+            else:
+                # float32格式 (旧版本)
+                patches = patches / 127.0
+                patches[patches < -1] = 0
         else:
             # Load TIFF data (fallback)
             with rasterio.open(sample['tiff_path']) as src:
@@ -342,15 +348,23 @@ class PatchLevelDataset(Dataset):
             patch_path = Path(sample['individual_patch_dir']) / f"{sample['base_name']}_p{patch_idx:02d}.npy"
             if patch_path.exists():
                 patch = np.load(str(patch_path))
-                patch = patch / 127.0
-                patch[patch < -1] = 0
+                if patch.dtype == np.int8:
+                    patch = patch.astype(np.float32) / 127.0
+                    patch[patch < -1] = 0
+                else:
+                    patch = patch / 127.0
+                    patch[patch < -1] = 0
             else:
                 # Fallback to all-patches npy
                 if 'npy_path' in sample:
                     all_patches = np.load(sample['npy_path'])
                     patch = all_patches[patch_idx]
-                    patch = patch / 127.0
-                    patch[patch < -1] = 0
+                    if patch.dtype == np.int8:
+                        patch = patch.astype(np.float32) / 127.0
+                        patch[patch < -1] = 0
+                    else:
+                        patch = patch / 127.0
+                        patch[patch < -1] = 0
                 else:
                     # Fallback to TIFF
                     with rasterio.open(sample['tiff_path']) as src:
@@ -362,8 +376,12 @@ class PatchLevelDataset(Dataset):
         elif self.use_preprocessed and 'npy_path' in sample:
             all_patches = np.load(sample['npy_path'])
             patch = all_patches[patch_idx]
-            patch = patch / 127.0
-            patch[patch < -1] = 0
+            if patch.dtype == np.int8:
+                patch = patch.astype(np.float32) / 127.0
+                patch[patch < -1] = 0
+            else:
+                patch = patch / 127.0
+                patch[patch < -1] = 0
         else:
             # Load TIFF data (fallback)
             with rasterio.open(sample['tiff_path']) as src:
@@ -648,7 +666,9 @@ def get_dataloaders(
         shuffle=True,
         num_workers=num_workers,
         pin_memory=True,
-        drop_last=True
+        drop_last=True,
+        persistent_workers=num_workers > 0,
+        prefetch_factor=2 if num_workers > 0 else None,
     )
 
     val_loader = DataLoader(
@@ -656,7 +676,9 @@ def get_dataloaders(
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
-        pin_memory=True
+        pin_memory=True,
+        persistent_workers=num_workers > 0,
+        prefetch_factor=2 if num_workers > 0 else None,
     )
 
     test_loader = DataLoader(
@@ -664,7 +686,9 @@ def get_dataloaders(
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
-        pin_memory=True
+        pin_memory=True,
+        persistent_workers=num_workers > 0,
+        prefetch_factor=2 if num_workers > 0 else None,
     )
 
     dataset_info = {
@@ -742,7 +766,9 @@ def get_patch_level_dataloaders(
         shuffle=True,
         num_workers=num_workers,
         pin_memory=True,
-        drop_last=True
+        drop_last=True,
+        persistent_workers=num_workers > 0,
+        prefetch_factor=2 if num_workers > 0 else None,
     )
 
     val_loader = DataLoader(
@@ -750,7 +776,9 @@ def get_patch_level_dataloaders(
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
-        pin_memory=True
+        pin_memory=True,
+        persistent_workers=num_workers > 0,
+        prefetch_factor=2 if num_workers > 0 else None,
     )
 
     test_loader = DataLoader(
@@ -758,7 +786,9 @@ def get_patch_level_dataloaders(
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
-        pin_memory=True
+        pin_memory=True,
+        persistent_workers=num_workers > 0,
+        prefetch_factor=2 if num_workers > 0 else None,
     )
 
     dataset_info = {
