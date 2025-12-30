@@ -2,6 +2,13 @@
 ResNet baseline model for population growth prediction
 
 Modified ResNet for 64-channel input (Alpha Earth embeddings)
+
+Supports multiple ResNet variants for scaling experiments:
+- resnet10: Custom lightweight ResNet (fewer layers)
+- resnet18: Standard ResNet-18
+- resnet34: Standard ResNet-34
+- resnet50: Standard ResNet-50 (with bottleneck blocks)
+- resnet101: Standard ResNet-101 (with bottleneck blocks)
 """
 
 import os
@@ -9,16 +16,134 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torchvision import models
-from torchvision.models import ResNet18_Weights, ResNet34_Weights, ResNet50_Weights
+from torchvision.models import ResNet18_Weights, ResNet34_Weights, ResNet50_Weights, ResNet101_Weights
 
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
 
 
+# =============================================================================
+# Custom ResNet10 Implementation (not available in torchvision)
+# =============================================================================
+
+class BasicBlock(nn.Module):
+    """Basic residual block for ResNet-10/18/34."""
+    expansion = 1
+
+    def __init__(self, in_channels, out_channels, stride=1, downsample=None):
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3,
+                               stride=stride, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3,
+                               stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+        self.downsample = downsample
+
+    def forward(self, x):
+        identity = x
+
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+
+        if self.downsample is not None:
+            identity = self.downsample(x)
+
+        out += identity
+        out = self.relu(out)
+
+        return out
+
+
+class ResNet10(nn.Module):
+    """
+    Custom ResNet-10 implementation.
+    Layer configuration: [1, 1, 1, 1] (one block per stage)
+    Total: 1 + 2*4 + 1 = 10 conv layers (including first conv and fc)
+    """
+
+    def __init__(self, input_channels=64, num_classes=1000):
+        super().__init__()
+        self.in_channels = 64
+
+        # First conv layer
+        self.conv1 = nn.Conv2d(input_channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        self.bn1 = nn.BatchNorm2d(64)
+        self.relu = nn.ReLU(inplace=True)
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+
+        # Residual layers: [1, 1, 1, 1]
+        self.layer1 = self._make_layer(64, 1, stride=1)
+        self.layer2 = self._make_layer(128, 1, stride=2)
+        self.layer3 = self._make_layer(256, 1, stride=2)
+        self.layer4 = self._make_layer(512, 1, stride=2)
+
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Linear(512, num_classes)
+
+        # Initialize weights
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+
+    def _make_layer(self, out_channels, blocks, stride=1):
+        downsample = None
+        if stride != 1 or self.in_channels != out_channels:
+            downsample = nn.Sequential(
+                nn.Conv2d(self.in_channels, out_channels, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(out_channels),
+            )
+
+        layers = []
+        layers.append(BasicBlock(self.in_channels, out_channels, stride, downsample))
+        self.in_channels = out_channels
+
+        for _ in range(1, blocks):
+            layers.append(BasicBlock(out_channels, out_channels))
+
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu(x)
+        x = self.maxpool(x)
+
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+        x = self.fc(x)
+
+        return x
+
+
+# =============================================================================
+# ResNet Encoder (supports all variants)
+# =============================================================================
+
 class ResNetEncoder(nn.Module):
     """
     ResNet encoder modified for 64-channel input.
+
+    Supported models:
+    - resnet10: ~5M params, custom implementation
+    - resnet18: ~11M params
+    - resnet34: ~21M params
+    - resnet50: ~25M params (bottleneck)
+    - resnet101: ~44M params (bottleneck)
     """
 
     def __init__(
@@ -28,9 +153,28 @@ class ResNetEncoder(nn.Module):
         pretrained: bool = False
     ):
         super().__init__()
+        self.model_name = model_name
 
-        # Load model with or without pretrained weights
-        if model_name == "resnet18":
+        # Load model based on name
+        if model_name == "resnet10":
+            # Custom ResNet-10 (no pretrained weights available)
+            if pretrained:
+                print("Warning: No pretrained weights available for ResNet-10, using random init")
+            base_model = ResNet10(input_channels=input_channels)
+            self.feature_dim = 512
+            # For ResNet10, we already have the correct input channels
+            self.conv1 = base_model.conv1
+            self.bn1 = base_model.bn1
+            self.relu = base_model.relu
+            self.maxpool = base_model.maxpool
+            self.layer1 = base_model.layer1
+            self.layer2 = base_model.layer2
+            self.layer3 = base_model.layer3
+            self.layer4 = base_model.layer4
+            self.avgpool = base_model.avgpool
+            return  # Skip the rest of __init__
+
+        elif model_name == "resnet18":
             weights = ResNet18_Weights.IMAGENET1K_V1 if pretrained else None
             base_model = models.resnet18(weights=weights)
             self.feature_dim = 512
@@ -42,8 +186,12 @@ class ResNetEncoder(nn.Module):
             weights = ResNet50_Weights.IMAGENET1K_V1 if pretrained else None
             base_model = models.resnet50(weights=weights)
             self.feature_dim = 2048
+        elif model_name == "resnet101":
+            weights = ResNet101_Weights.IMAGENET1K_V1 if pretrained else None
+            base_model = models.resnet101(weights=weights)
+            self.feature_dim = 2048
         else:
-            raise ValueError(f"Unknown model: {model_name}")
+            raise ValueError(f"Unknown model: {model_name}. Supported: resnet10, resnet18, resnet34, resnet50, resnet101")
 
         # Modify first conv layer for 64 channels
         original_conv = base_model.conv1
@@ -243,26 +391,64 @@ class ResNetBaseline(nn.Module):
 
 
 if __name__ == "__main__":
-    print("Testing ResNet baseline model...")
+    print("=" * 70)
+    print("Testing ResNet baseline models (all variants)")
+    print("=" * 70)
 
-    # Test without pretrained
-    model = ResNetBaseline(config.ResNetConfig(use_pretrained=False))
-    print(f"Model parameters (no pretrain): {sum(p.numel() for p in model.parameters()):,}")
+    # Test all ResNet variants
+    variants = ["resnet10", "resnet18", "resnet34", "resnet50", "resnet101"]
 
-    # Test with pretrained
-    model_pt = ResNetBaseline(config.ResNetConfig(use_pretrained=True))
-    print(f"Model parameters (pretrained): {sum(p.numel() for p in model_pt.parameters()):,}")
-
-    # Test forward pass
     batch_size = 2
     num_patches = 25
     channels = 64
     patch_size = 200
 
-    x = torch.randn(batch_size, num_patches, channels, patch_size, patch_size)
-    print(f"Input shape: {x.shape}")
+    # City-level input
+    x_city = torch.randn(batch_size, num_patches, channels, patch_size, patch_size)
+    # Patch-level input
+    x_patch = torch.randn(batch_size, channels, patch_size, patch_size)
 
-    with torch.no_grad():
-        output = model(x)
+    print(f"\nCity-level input shape: {x_city.shape}")
+    print(f"Patch-level input shape: {x_patch.shape}")
+    print()
 
-    print(f"Output shape: {output.shape}")
+    results = []
+    for variant in variants:
+        print(f"\n{'='*70}")
+        print(f"Testing {variant.upper()}")
+        print(f"{'='*70}")
+
+        # Create model config
+        model_config = config.ResNetConfig(model_name=variant, use_pretrained=False)
+
+        # City-level model
+        model_city = ResNetBaseline(model_config, patch_level=False)
+        params = sum(p.numel() for p in model_city.parameters())
+        print(f"  Parameters: {params:,}")
+
+        # Test forward pass
+        with torch.no_grad():
+            output_city = model_city(x_city)
+            print(f"  City-level output shape: {output_city.shape}")
+
+        # Patch-level model
+        model_patch = ResNetBaseline(model_config, patch_level=True)
+        with torch.no_grad():
+            output_patch = model_patch(x_patch)
+            print(f"  Patch-level output shape: {output_patch.shape}")
+
+        results.append({
+            'model': variant,
+            'params': params,
+            'feature_dim': model_city.encoder.feature_dim
+        })
+
+    # Summary table
+    print(f"\n{'='*70}")
+    print("SUMMARY: ResNet Scaling")
+    print(f"{'='*70}")
+    print(f"{'Model':<12} {'Parameters':>15} {'Feature Dim':>15}")
+    print("-" * 45)
+    for r in results:
+        print(f"{r['model']:<12} {r['params']:>15,} {r['feature_dim']:>15}")
+    print(f"{'='*70}")

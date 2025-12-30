@@ -270,6 +270,125 @@ EXPERIMENTS = {
         use_pretrain=True,
         num_workers=2  # Reduced to avoid OOM during pretrain
     ),
+
+    # ==========================================================================
+    # ResNet Scaling Experiments (comparing different model sizes)
+    # Models: resnet10 (~5M) < resnet18 (~11M) < resnet34 (~21M) < resnet50 (~25M) < resnet101 (~44M)
+    # ==========================================================================
+
+    # --- ResNet10 (lightest, custom implementation) ---
+    "resnet10_baseline": ExperimentConfig(
+        exp_name="resnet10_baseline",
+        model_config=ResNetConfig(model_name="resnet10", use_pretrained=False),
+        use_pretrain=False
+    ),
+    "resnet10_patch_level": ExperimentConfig(
+        exp_name="resnet10_patch_level",
+        model_config=ResNetConfig(model_name="resnet10", use_pretrained=False),
+        train_config=TrainConfig(
+            training_mode="patch_level",
+            batch_size=64,  # Smaller model, can use larger batch
+            patch_level_aggregation="trimmed_mean",
+            patch_level_trim_ratio=0.1
+        ),
+        use_pretrain=False
+    ),
+
+    # --- ResNet18 (already exists as resnet_baseline, adding explicit name for clarity) ---
+    "resnet18_baseline": ExperimentConfig(
+        exp_name="resnet18_baseline",
+        model_config=ResNetConfig(model_name="resnet18", use_pretrained=False),
+        use_pretrain=False
+    ),
+    "resnet18_imagenet": ExperimentConfig(
+        exp_name="resnet18_imagenet",
+        model_config=ResNetConfig(model_name="resnet18", use_pretrained=True),
+        use_pretrain=False
+    ),
+    "resnet18_patch_level": ExperimentConfig(
+        exp_name="resnet18_patch_level",
+        model_config=ResNetConfig(model_name="resnet18", use_pretrained=False),
+        train_config=TrainConfig(
+            training_mode="patch_level",
+            batch_size=32,
+            patch_level_aggregation="trimmed_mean",
+            patch_level_trim_ratio=0.1
+        ),
+        use_pretrain=False
+    ),
+
+    # --- ResNet34 ---
+    "resnet34_baseline": ExperimentConfig(
+        exp_name="resnet34_baseline",
+        model_config=ResNetConfig(model_name="resnet34", use_pretrained=False),
+        use_pretrain=False
+    ),
+    "resnet34_imagenet": ExperimentConfig(
+        exp_name="resnet34_imagenet",
+        model_config=ResNetConfig(model_name="resnet34", use_pretrained=True),
+        use_pretrain=False
+    ),
+    "resnet34_patch_level": ExperimentConfig(
+        exp_name="resnet34_patch_level",
+        model_config=ResNetConfig(model_name="resnet34", use_pretrained=False),
+        train_config=TrainConfig(
+            training_mode="patch_level",
+            batch_size=32,
+            patch_level_aggregation="trimmed_mean",
+            patch_level_trim_ratio=0.1
+        ),
+        use_pretrain=False
+    ),
+
+    # --- ResNet50 (bottleneck blocks, larger feature dim: 2048) ---
+    "resnet50_baseline": ExperimentConfig(
+        exp_name="resnet50_baseline",
+        model_config=ResNetConfig(model_name="resnet50", hidden_dim=1024, use_pretrained=False),
+        train_config=TrainConfig(batch_size=8),  # Reduced batch size for larger model
+        use_pretrain=False
+    ),
+    "resnet50_imagenet": ExperimentConfig(
+        exp_name="resnet50_imagenet",
+        model_config=ResNetConfig(model_name="resnet50", hidden_dim=1024, use_pretrained=True),
+        train_config=TrainConfig(batch_size=8),
+        use_pretrain=False
+    ),
+    "resnet50_patch_level": ExperimentConfig(
+        exp_name="resnet50_patch_level",
+        model_config=ResNetConfig(model_name="resnet50", hidden_dim=1024, use_pretrained=False),
+        train_config=TrainConfig(
+            training_mode="patch_level",
+            batch_size=16,  # Reduced for larger model
+            patch_level_aggregation="trimmed_mean",
+            patch_level_trim_ratio=0.1
+        ),
+        use_pretrain=False
+    ),
+
+    # --- ResNet101 (deepest, bottleneck blocks) ---
+    "resnet101_baseline": ExperimentConfig(
+        exp_name="resnet101_baseline",
+        model_config=ResNetConfig(model_name="resnet101", hidden_dim=1024, use_pretrained=False),
+        train_config=TrainConfig(batch_size=4),  # Small batch for largest model
+        use_pretrain=False
+    ),
+    "resnet101_imagenet": ExperimentConfig(
+        exp_name="resnet101_imagenet",
+        model_config=ResNetConfig(model_name="resnet101", hidden_dim=1024, use_pretrained=True),
+        train_config=TrainConfig(batch_size=4),
+        use_pretrain=False
+    ),
+    "resnet101_patch_level": ExperimentConfig(
+        exp_name="resnet101_patch_level",
+        model_config=ResNetConfig(model_name="resnet101", hidden_dim=1024, use_pretrained=False),
+        train_config=TrainConfig(
+            training_mode="patch_level",
+            batch_size=8,  # Reduced for largest model
+            patch_level_aggregation="trimmed_mean",
+            patch_level_trim_ratio=0.1
+        ),
+        use_pretrain=False
+    ),
 }
 
 

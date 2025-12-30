@@ -151,6 +151,8 @@ python compare_results.py
 
 ## 可用实验
 
+### 基础实验
+
 | 实验名称 | 模型 | 预训练 | 训练模式 | 说明 |
 |---------|------|--------|---------|------|
 | `mlp_baseline` | MLP | 无 | city_level | MLP 基线 |
@@ -164,6 +166,35 @@ python compare_results.py
 | `light_cnn_patch_level` | LightCNN | 无 | patch_level | Patch级别训练 CNN |
 | `resnet_patch_level` | ResNet18 | 无 | patch_level | Patch级别训练 ResNet |
 | `simclr_cnn_patch_level` | LightCNN | SimCLR | patch_level | SimCLR + Patch级别 |
+
+### ResNet Scaling 实验
+
+用于研究模型规模对预测性能的影响（Scaling Law 分析）：
+
+| 实验名称 | 模型 | 预训练 | 训练模式 | Batch Size |
+|---------|------|--------|---------|------------|
+| `resnet10_baseline` | ResNet10 | 无 | city_level | 16 |
+| `resnet10_patch_level` | ResNet10 | 无 | patch_level | 64 |
+| `resnet18_baseline` | ResNet18 | 无 | city_level | 16 |
+| `resnet18_imagenet` | ResNet18 | ImageNet | city_level | 16 |
+| `resnet18_patch_level` | ResNet18 | 无 | patch_level | 32 |
+| `resnet34_baseline` | ResNet34 | 无 | city_level | 16 |
+| `resnet34_imagenet` | ResNet34 | ImageNet | city_level | 16 |
+| `resnet34_patch_level` | ResNet34 | 无 | patch_level | 32 |
+| `resnet50_baseline` | ResNet50 | 无 | city_level | 8 |
+| `resnet50_imagenet` | ResNet50 | ImageNet | city_level | 8 |
+| `resnet50_patch_level` | ResNet50 | 无 | patch_level | 16 |
+| `resnet101_baseline` | ResNet101 | 无 | city_level | 4 |
+| `resnet101_imagenet` | ResNet101 | ImageNet | city_level | 4 |
+| `resnet101_patch_level` | ResNet101 | 无 | patch_level | 8 |
+
+> **运行示例**:
+> ```bash
+> # 串行运行所有 ResNet scaling 实验
+> for exp in resnet10_baseline resnet34_baseline resnet50_baseline resnet101_baseline; do
+>     python train.py --exp $exp --gpu 0
+> done
+> ```
 
 ---
 
@@ -202,16 +233,28 @@ python compare_results.py
 
 ### ResNet Baseline (`models/resnet_baseline.py`)
 
+支持多种 ResNet 变体，用于模型规模对比实验：
+
 ```
 输入 patch (64, 200, 200)
-    ↓ Modified ResNet18 (首层conv适配64通道)
-特征向量 (512,)
+    ↓ Modified ResNet (首层conv适配64通道)
+特征向量 (512 或 2048)
     ↓ Aggregation [city_level only]
-    ↓ Regression Head: 512 → 256 → 128 → 1
+    ↓ Regression Head
 输出 (1,)
 ```
 
-**参数量**: ~11M
+**ResNet 变体参数量对比**:
+
+| 模型 | 参数量 | 特征维度 | 相对大小 | 说明 |
+|------|--------|---------|---------|------|
+| ResNet10 | ~5.5M | 512 | 0.47x | 自定义轻量版，每阶段1个block |
+| ResNet18 | ~11.8M | 512 | 1.00x | 标准基线 |
+| ResNet34 | ~21.9M | 512 | 1.86x | 更深的BasicBlock |
+| ResNet50 | ~24.9M | 2048 | 2.12x | Bottleneck blocks |
+| ResNet101 | ~43.9M | 2048 | 3.73x | 最深，Bottleneck blocks |
+
+> **注意**: ResNet10 是自定义实现（torchvision 不包含），无 ImageNet 预训练权重可用。
 
 ### 聚合方式
 
@@ -547,6 +590,18 @@ wandb>=0.15.0
 ---
 
 ## 更新日志
+
+### v2.3 (2025-12-31)
+- **ResNet Scaling 实验**: 新增 14 个 ResNet 变体实验，用于 Scaling Law 分析
+  - 支持 ResNet10/18/34/50/101 五种模型规模
+  - 每种规模支持 baseline、ImageNet预训练、patch_level 三种配置
+  - ResNet10 为自定义轻量实现（~5.5M 参数）
+- **模型架构扩展**: `resnet_baseline.py` 支持多种 ResNet 变体
+  - 新增 `ResNet10` 类（自定义实现，torchvision 不包含）
+  - 支持 `resnet101` 及其 ImageNet 预训练权重
+- **Batch Size 自适应**: 大模型自动使用更小的 batch size 避免 OOM
+  - ResNet50: batch_size=8 (city) / 16 (patch)
+  - ResNet101: batch_size=4 (city) / 8 (patch)
 
 ### v2.2.1 (2025-12-30)
 - **配置优化**: `simclr_cnn_patch_level` 实验减小 batch_size 和 num_workers 以避免 OOM
