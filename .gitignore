@@ -20,6 +20,7 @@ wandb/
 *.log
 
 # Results data (pickle files are large and can be regenerated)
+*.pkl
 results/*.pkl
 
 # IDE

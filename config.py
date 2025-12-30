@@ -255,17 +255,20 @@ EXPERIMENTS = {
     ),
 
     # Patch-level with SimCLR pretraining
+    # NOTE: batch_size=8 and num_workers=2 for pretrain phase (city-level data ~512MB/sample)
+    # After pretrain, patch-level finetune uses same batch_size (smaller but works fine)
     "simclr_cnn_patch_level": ExperimentConfig(
         exp_name="simclr_cnn_patch_level",
         model_config=LightCNNConfig(),
         train_config=TrainConfig(
             training_mode="patch_level",
-            batch_size=64,
+            batch_size=8,  # Reduced for SimCLR pretrain (city-level data is large)
             patch_level_aggregation="trimmed_mean",
             patch_level_trim_ratio=0.1
         ),
         pretrain_config=SimCLRConfig(encoder_type="light_cnn"),
-        use_pretrain=True
+        use_pretrain=True,
+        num_workers=2  # Reduced to avoid OOM during pretrain
     ),
 }
 

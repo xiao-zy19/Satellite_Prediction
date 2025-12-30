@@ -548,6 +548,10 @@ wandb>=0.15.0
 
 ## 更新日志
 
+### v2.2.1 (2025-12-30)
+- **配置优化**: `simclr_cnn_patch_level` 实验减小 batch_size 和 num_workers 以避免 OOM
+- **Gitignore 修复**: 从 git 追踪中移除已提交的 pkl 文件
+
 ### v2.2 (2025-12-29)
 - **数据格式优化**: 预处理脚本保持 int8 格式，存储空间减少 4 倍
 - **数据加载优化**: 启用 `persistent_workers` 和 `prefetch_factor` 加速训练
