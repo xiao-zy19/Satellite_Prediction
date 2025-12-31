@@ -108,11 +108,13 @@ class Trainer:
         exp_config: ExperimentConfig,
         device: torch.device,
         logger=None,
-        use_wandb: bool = False
+        use_wandb: bool = False,
+        test_loader: DataLoader = None
     ):
         self.model = model.to(device)
         self.train_loader = train_loader
         self.val_loader = val_loader
+        self.test_loader = test_loader  # 添加测试集 loader
         self.exp_config = exp_config
         self.train_config = exp_config.train_config
         self.device = device
@@ -130,13 +132,17 @@ class Trainer:
         )
         self.scheduler = get_scheduler(self.optimizer, self.train_config)
 
-        # History
+        # History (添加测试集指标)
         self.history = {
             'train_loss': [],
             'val_loss': [],
             'val_pearson_r': [],
             'val_r2': [],
             'val_mae': [],
+            'test_loss': [],
+            'test_pearson_r': [],
+            'test_r2': [],
+            'test_mae': [],
             'learning_rate': []
         }
 
@@ -178,13 +184,18 @@ class Trainer:
 
     @torch.no_grad()
     def validate(self, epoch: int):
-        """Validate the model."""
+        """Validate the model on validation set."""
+        return self.validate_on_loader(self.val_loader, f"Epoch {epoch} [Val]")
+
+    @torch.no_grad()
+    def validate_on_loader(self, data_loader: DataLoader, desc: str = "Eval"):
+        """Validate the model on a given data loader."""
         self.model.eval()
         loss_meter = AverageMeter()
         all_labels = []
         all_preds = []
 
-        pbar = tqdm(self.val_loader, desc=f"Epoch {epoch} [Val]")
+        pbar = tqdm(data_loader, desc=desc, leave=False)
         for patches, labels, _ in pbar:
             patches = patches.to(self.device)
             labels = labels.to(self.device)
@@ -225,6 +236,11 @@ class Trainer:
             # Validate
             val_loss, val_metrics, val_labels, val_preds = self.validate(epoch)
 
+            # Evaluate on test set (for monitoring overfitting)
+            test_loss, test_metrics = None, None
+            if self.test_loader is not None:
+                test_loss, test_metrics, _, _ = self.validate_on_loader(self.test_loader, "Test")
+
             # Update scheduler
             if self.scheduler:
                 self.scheduler.step()
@@ -239,9 +255,16 @@ class Trainer:
             self.history['val_mae'].append(val_metrics['mae'])
             self.history['learning_rate'].append(current_lr)
 
+            # Update test history
+            if test_metrics is not None:
+                self.history['test_loss'].append(test_loss)
+                self.history['test_pearson_r'].append(test_metrics['pearson_r'])
+                self.history['test_r2'].append(test_metrics['r2'])
+                self.history['test_mae'].append(test_metrics['mae'])
+
             # Log to wandb
             if self.use_wandb:
-                wandb.log({
+                log_dict = {
                     "epoch": epoch,
                     "train/loss": train_loss,
                     "train/pearson_r": train_metrics['pearson_r'],
@@ -250,20 +273,36 @@ class Trainer:
                     "val/r2": val_metrics['r2'],
                     "val/mae": val_metrics['mae'],
                     "learning_rate": current_lr,
-                }, step=epoch)
+                }
+                # Add test metrics to wandb log
+                if test_metrics is not None:
+                    log_dict.update({
+                        "test/loss": test_loss,
+                        "test/pearson_r": test_metrics['pearson_r'],
+                        "test/r2": test_metrics['r2'],
+                        "test/mae": test_metrics['mae'],
+                        # Overfitting indicators
+                        "overfit/val_test_r2_gap": val_metrics['r2'] - test_metrics['r2'],
+                        "overfit/train_val_loss_gap": train_loss - val_loss,
+                        "overfit/train_test_loss_gap": train_loss - test_loss,
+                    })
+                wandb.log(log_dict, step=epoch)
 
             # Print summary
             epoch_time = time.time() - epoch_start
             print(f"\nEpoch {epoch}/{num_epochs} ({format_time(epoch_time)})")
             print(f"  Train Loss: {train_loss:.4f} | Pearson r: {train_metrics['pearson_r']:.4f}")
             print(f"  Val Loss:   {val_loss:.4f} | Pearson r: {val_metrics['pearson_r']:.4f} | R²: {val_metrics['r2']:.4f}")
+            if test_metrics is not None:
+                print(f"  Test Loss:  {test_loss:.4f} | Pearson r: {test_metrics['pearson_r']:.4f} | R²: {test_metrics['r2']:.4f}")
             print(f"  LR: {current_lr:.2e}")
 
             if self.logger:
-                self.logger.info(
-                    f"Epoch {epoch}: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}, "
-                    f"pearson_r={val_metrics['pearson_r']:.4f}"
-                )
+                log_msg = (f"Epoch {epoch}: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}, "
+                           f"val_r={val_metrics['pearson_r']:.4f}")
+                if test_metrics is not None:
+                    log_msg += f", test_loss={test_loss:.4f}, test_r={test_metrics['pearson_r']:.4f}"
+                self.logger.info(log_msg)
 
             # Save best model
             if val_loss < self.best_val_loss:
@@ -445,7 +484,7 @@ def run_experiment(exp_name: str, gpu_id: int = 3):
     # Move model to device
     model = model.to(device)
 
-    # Create trainer
+    # Create trainer (with test_loader for overfitting monitoring)
     trainer = Trainer(
         model=model,
         train_loader=train_loader,
@@ -453,7 +492,8 @@ def run_experiment(exp_name: str, gpu_id: int = 3):
         exp_config=exp_config,
         device=device,
         logger=logger,
-        use_wandb=use_wandb
+        use_wandb=use_wandb,
+        test_loader=test_loader
     )
 
     # Train with frozen encoder first (if applicable)
