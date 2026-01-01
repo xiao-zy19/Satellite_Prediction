@@ -634,9 +634,21 @@ def get_dataloaders(
     batch_size: int = 16,
     num_workers: int = 4,
     augment_train: bool = True,
-    contrastive: bool = False
+    contrastive: bool = False,
+    seed: int = config.RANDOM_SEED
 ) -> Tuple[DataLoader, DataLoader, DataLoader, Dict]:
-    """Create train, validation, and test dataloaders."""
+    """Create train, validation, and test dataloaders.
+
+    Args:
+        batch_size: Batch size for dataloaders
+        num_workers: Number of worker processes for data loading
+        augment_train: Whether to apply data augmentation on training data
+        contrastive: Whether to return contrastive pairs (for SimCLR)
+        seed: Random seed for reproducible data splitting
+
+    Returns:
+        train_loader, val_loader, test_loader, dataset_info
+    """
     print("Loading population data...")
     pop_df = load_population_data()
 
@@ -647,8 +659,8 @@ def get_dataloaders(
     samples = create_dataset_samples(pop_df, sat_data)
     print(f"Total valid samples: {len(samples)}")
 
-    print("Splitting dataset...")
-    train_samples, val_samples, test_samples = split_dataset(samples)
+    print(f"Splitting dataset (seed={seed})...")
+    train_samples, val_samples, test_samples = split_dataset(samples, seed=seed)
 
     print(f"  Train: {len(train_samples)} samples")
     print(f"  Val: {len(val_samples)} samples")
@@ -660,6 +672,10 @@ def get_dataloaders(
     val_dataset = CityDataset(val_samples, augment=False, contrastive=False)
     test_dataset = CityDataset(test_samples, augment=False, contrastive=False)
 
+    # Create generator for reproducible shuffling
+    g = torch.Generator()
+    g.manual_seed(seed)
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
@@ -669,6 +685,7 @@ def get_dataloaders(
         drop_last=True,
         persistent_workers=num_workers > 0,
         prefetch_factor=2 if num_workers > 0 else None,
+        generator=g,
     )
 
     val_loader = DataLoader(
@@ -697,7 +714,8 @@ def get_dataloaders(
         'num_test': len(test_samples),
         'train_samples': train_samples,
         'val_samples': val_samples,
-        'test_samples': test_samples
+        'test_samples': test_samples,
+        'seed': seed
     }
 
     return train_loader, val_loader, test_loader, dataset_info
@@ -726,7 +744,8 @@ def get_pretrain_dataloader(
 def get_patch_level_dataloaders(
     batch_size: int = 64,
     num_workers: int = 4,
-    augment_train: bool = True
+    augment_train: bool = True,
+    seed: int = config.RANDOM_SEED
 ) -> Tuple[DataLoader, DataLoader, DataLoader, Dict]:
     """
     Create patch-level dataloaders where each patch is an independent sample.
@@ -734,6 +753,12 @@ def get_patch_level_dataloaders(
     This follows the paper's method:
     - Training: each patch is an independent sample with city's growth rate
     - Validation/Test: same as training, but predictions will be aggregated at evaluation
+
+    Args:
+        batch_size: Batch size for dataloaders
+        num_workers: Number of worker processes for data loading
+        augment_train: Whether to apply data augmentation on training data
+        seed: Random seed for reproducible data splitting
 
     Returns:
         train_loader, val_loader, test_loader, dataset_info
@@ -748,8 +773,8 @@ def get_patch_level_dataloaders(
     samples = create_dataset_samples(pop_df, sat_data)
     print(f"Total valid city-year samples: {len(samples)}")
 
-    print("Splitting dataset (by city)...")
-    train_samples, val_samples, test_samples = split_dataset(samples)
+    print(f"Splitting dataset by city (seed={seed})...")
+    train_samples, val_samples, test_samples = split_dataset(samples, seed=seed)
 
     print(f"  Train: {len(train_samples)} city-years -> {len(train_samples) * config.NUM_PATCHES_TOTAL} patches")
     print(f"  Val: {len(val_samples)} city-years -> {len(val_samples) * config.NUM_PATCHES_TOTAL} patches")
@@ -760,6 +785,10 @@ def get_patch_level_dataloaders(
     val_dataset = PatchLevelDataset(val_samples, augment=False)
     test_dataset = PatchLevelDataset(test_samples, augment=False)
 
+    # Create generator for reproducible shuffling
+    g = torch.Generator()
+    g.manual_seed(seed)
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
@@ -769,6 +798,7 @@ def get_patch_level_dataloaders(
         drop_last=True,
         persistent_workers=num_workers > 0,
         prefetch_factor=2 if num_workers > 0 else None,
+        generator=g,
     )
 
     val_loader = DataLoader(
@@ -802,7 +832,8 @@ def get_patch_level_dataloaders(
         'val_samples': val_samples,
         'test_samples': test_samples,
         'num_patches_per_city': config.NUM_PATCHES_TOTAL,
-        'training_mode': 'patch_level'
+        'training_mode': 'patch_level',
+        'seed': seed
     }
 
     return train_loader, val_loader, test_loader, dataset_info

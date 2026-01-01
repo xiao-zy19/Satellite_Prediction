@@ -68,7 +68,8 @@ class MLPConfig:
     hidden_dims: List[int] = field(default_factory=lambda: [256, 128, 64])
     dropout_rate: float = 0.3
     use_batch_norm: bool = True
-    aggregation: str = "mean"  # mean, attention, trimmed_mean
+    # Aggregation: mean, trimmed_mean, attention, pos_attention, spatial_attention, transformer, transformer_2d
+    aggregation: str = "mean"
 
 
 @dataclass
@@ -81,6 +82,7 @@ class LightCNNConfig:
     fc_dims: List[int] = field(default_factory=lambda: [256, 64])
     dropout_rate: float = 0.3
     use_batch_norm: bool = True
+    # Aggregation: mean, trimmed_mean, attention, pos_attention, spatial_attention, transformer, transformer_2d
     aggregation: str = "mean"
 
 
@@ -93,6 +95,7 @@ class ResNetConfig:
     hidden_dim: int = 512
     dropout_rate: float = 0.3
     use_pretrained: bool = False
+    # Aggregation: mean, trimmed_mean, attention, pos_attention, spatial_attention, transformer, transformer_2d
     aggregation: str = "mean"
 
 
@@ -173,44 +176,94 @@ EXPERIMENTS = {
     # ==========================================================================
     # City-level training (original method: 25 patches -> 1 prediction)
     # ==========================================================================
-    # Baseline models (no pretraining)
+    # Baseline models (no pretraining) - with 3 basic aggregation methods
+    # --- MLP with basic aggregations ---
     "mlp_baseline": ExperimentConfig(
         exp_name="mlp_baseline",
-        model_config=MLPConfig(),
+        model_config=MLPConfig(aggregation="mean"),
         use_pretrain=False
     ),
+    "mlp_median": ExperimentConfig(
+        exp_name="mlp_median",
+        model_config=MLPConfig(aggregation="median"),
+        use_pretrain=False
+    ),
+    "mlp_trimmed_mean": ExperimentConfig(
+        exp_name="mlp_trimmed_mean",
+        model_config=MLPConfig(aggregation="trimmed_mean"),
+        use_pretrain=False
+    ),
+    # --- LightCNN with basic aggregations ---
     "light_cnn_baseline": ExperimentConfig(
         exp_name="light_cnn_baseline",
-        model_config=LightCNNConfig(),
+        model_config=LightCNNConfig(aggregation="mean"),
         use_pretrain=False
     ),
-    "resnet_baseline": ExperimentConfig(
-        exp_name="resnet_baseline",
-        model_config=ResNetConfig(use_pretrained=False),
+    "light_cnn_median": ExperimentConfig(
+        exp_name="light_cnn_median",
+        model_config=LightCNNConfig(aggregation="median"),
         use_pretrain=False
     ),
-    "resnet_imagenet": ExperimentConfig(
-        exp_name="resnet_imagenet",
-        model_config=ResNetConfig(use_pretrained=True),
+    "light_cnn_trimmed_mean": ExperimentConfig(
+        exp_name="light_cnn_trimmed_mean",
+        model_config=LightCNNConfig(aggregation="trimmed_mean"),
         use_pretrain=False
     ),
-
-    # Self-supervised pretraining
+    # Self-supervised pretraining with 3 basic aggregation methods
+    # --- SimCLR + MLP with basic aggregations ---
     "simclr_mlp": ExperimentConfig(
         exp_name="simclr_mlp",
-        model_config=MLPConfig(),
+        model_config=MLPConfig(aggregation="mean"),
         pretrain_config=SimCLRConfig(encoder_type="mlp"),
         use_pretrain=True
     ),
+    "simclr_mlp_median": ExperimentConfig(
+        exp_name="simclr_mlp_median",
+        model_config=MLPConfig(aggregation="median"),
+        pretrain_config=SimCLRConfig(encoder_type="mlp"),
+        use_pretrain=True
+    ),
+    "simclr_mlp_trimmed_mean": ExperimentConfig(
+        exp_name="simclr_mlp_trimmed_mean",
+        model_config=MLPConfig(aggregation="trimmed_mean"),
+        pretrain_config=SimCLRConfig(encoder_type="mlp"),
+        use_pretrain=True
+    ),
+    # --- SimCLR + CNN with basic aggregations ---
     "simclr_cnn": ExperimentConfig(
         exp_name="simclr_cnn",
-        model_config=LightCNNConfig(),
+        model_config=LightCNNConfig(aggregation="mean"),
         pretrain_config=SimCLRConfig(encoder_type="light_cnn"),
         use_pretrain=True
     ),
+    "simclr_cnn_median": ExperimentConfig(
+        exp_name="simclr_cnn_median",
+        model_config=LightCNNConfig(aggregation="median"),
+        pretrain_config=SimCLRConfig(encoder_type="light_cnn"),
+        use_pretrain=True
+    ),
+    "simclr_cnn_trimmed_mean": ExperimentConfig(
+        exp_name="simclr_cnn_trimmed_mean",
+        model_config=LightCNNConfig(aggregation="trimmed_mean"),
+        pretrain_config=SimCLRConfig(encoder_type="light_cnn"),
+        use_pretrain=True
+    ),
+    # --- MAE + CNN with basic aggregations ---
     "mae_cnn": ExperimentConfig(
         exp_name="mae_cnn",
-        model_config=LightCNNConfig(),
+        model_config=LightCNNConfig(aggregation="mean"),
+        pretrain_config=MAEConfig(encoder_type="light_cnn"),
+        use_pretrain=True
+    ),
+    "mae_cnn_median": ExperimentConfig(
+        exp_name="mae_cnn_median",
+        model_config=LightCNNConfig(aggregation="median"),
+        pretrain_config=MAEConfig(encoder_type="light_cnn"),
+        use_pretrain=True
+    ),
+    "mae_cnn_trimmed_mean": ExperimentConfig(
+        exp_name="mae_cnn_trimmed_mean",
+        model_config=LightCNNConfig(aggregation="trimmed_mean"),
         pretrain_config=MAEConfig(encoder_type="light_cnn"),
         use_pretrain=True
     ),
@@ -242,18 +295,6 @@ EXPERIMENTS = {
         ),
         use_pretrain=False
     ),
-    "resnet_patch_level": ExperimentConfig(
-        exp_name="resnet_patch_level",
-        model_config=ResNetConfig(use_pretrained=False),
-        train_config=TrainConfig(
-            training_mode="patch_level",
-            batch_size=32,
-            patch_level_aggregation="trimmed_mean",
-            patch_level_trim_ratio=0.1
-        ),
-        use_pretrain=False
-    ),
-
     # Patch-level with SimCLR pretraining
     # NOTE: batch_size=8 and num_workers=2 for pretrain phase (city-level data ~512MB/sample)
     # After pretrain, patch-level finetune uses same batch_size (smaller but works fine)
@@ -279,7 +320,17 @@ EXPERIMENTS = {
     # --- ResNet10 (lightest, custom implementation) ---
     "resnet10_baseline": ExperimentConfig(
         exp_name="resnet10_baseline",
-        model_config=ResNetConfig(model_name="resnet10", use_pretrained=False),
+        model_config=ResNetConfig(model_name="resnet10", aggregation="mean", use_pretrained=False),
+        use_pretrain=False
+    ),
+    "resnet10_median": ExperimentConfig(
+        exp_name="resnet10_median",
+        model_config=ResNetConfig(model_name="resnet10", aggregation="median", use_pretrained=False),
+        use_pretrain=False
+    ),
+    "resnet10_trimmed_mean": ExperimentConfig(
+        exp_name="resnet10_trimmed_mean",
+        model_config=ResNetConfig(model_name="resnet10", aggregation="trimmed_mean", use_pretrained=False),
         use_pretrain=False
     ),
     "resnet10_patch_level": ExperimentConfig(
@@ -294,15 +345,35 @@ EXPERIMENTS = {
         use_pretrain=False
     ),
 
-    # --- ResNet18 (already exists as resnet_baseline, adding explicit name for clarity) ---
+    # --- ResNet18 ---
     "resnet18_baseline": ExperimentConfig(
         exp_name="resnet18_baseline",
-        model_config=ResNetConfig(model_name="resnet18", use_pretrained=False),
+        model_config=ResNetConfig(model_name="resnet18", aggregation="mean", use_pretrained=False),
+        use_pretrain=False
+    ),
+    "resnet18_median": ExperimentConfig(
+        exp_name="resnet18_median",
+        model_config=ResNetConfig(model_name="resnet18", aggregation="median", use_pretrained=False),
+        use_pretrain=False
+    ),
+    "resnet18_trimmed_mean": ExperimentConfig(
+        exp_name="resnet18_trimmed_mean",
+        model_config=ResNetConfig(model_name="resnet18", aggregation="trimmed_mean", use_pretrained=False),
         use_pretrain=False
     ),
     "resnet18_imagenet": ExperimentConfig(
         exp_name="resnet18_imagenet",
-        model_config=ResNetConfig(model_name="resnet18", use_pretrained=True),
+        model_config=ResNetConfig(model_name="resnet18", aggregation="mean", use_pretrained=True),
+        use_pretrain=False
+    ),
+    "resnet18_imagenet_median": ExperimentConfig(
+        exp_name="resnet18_imagenet_median",
+        model_config=ResNetConfig(model_name="resnet18", aggregation="median", use_pretrained=True),
+        use_pretrain=False
+    ),
+    "resnet18_imagenet_trimmed_mean": ExperimentConfig(
+        exp_name="resnet18_imagenet_trimmed_mean",
+        model_config=ResNetConfig(model_name="resnet18", aggregation="trimmed_mean", use_pretrained=True),
         use_pretrain=False
     ),
     "resnet18_patch_level": ExperimentConfig(
@@ -316,16 +387,47 @@ EXPERIMENTS = {
         ),
         use_pretrain=False
     ),
+    "resnet18_imagenet_patch_level": ExperimentConfig(
+        exp_name="resnet18_imagenet_patch_level",
+        model_config=ResNetConfig(model_name="resnet18", use_pretrained=True),
+        train_config=TrainConfig(
+            training_mode="patch_level",
+            batch_size=32,
+            patch_level_aggregation="trimmed_mean",
+            patch_level_trim_ratio=0.1
+        ),
+        use_pretrain=False
+    ),
 
     # --- ResNet34 ---
     "resnet34_baseline": ExperimentConfig(
         exp_name="resnet34_baseline",
-        model_config=ResNetConfig(model_name="resnet34", use_pretrained=False),
+        model_config=ResNetConfig(model_name="resnet34", aggregation="mean", use_pretrained=False),
+        use_pretrain=False
+    ),
+    "resnet34_median": ExperimentConfig(
+        exp_name="resnet34_median",
+        model_config=ResNetConfig(model_name="resnet34", aggregation="median", use_pretrained=False),
+        use_pretrain=False
+    ),
+    "resnet34_trimmed_mean": ExperimentConfig(
+        exp_name="resnet34_trimmed_mean",
+        model_config=ResNetConfig(model_name="resnet34", aggregation="trimmed_mean", use_pretrained=False),
         use_pretrain=False
     ),
     "resnet34_imagenet": ExperimentConfig(
         exp_name="resnet34_imagenet",
-        model_config=ResNetConfig(model_name="resnet34", use_pretrained=True),
+        model_config=ResNetConfig(model_name="resnet34", aggregation="mean", use_pretrained=True),
+        use_pretrain=False
+    ),
+    "resnet34_imagenet_median": ExperimentConfig(
+        exp_name="resnet34_imagenet_median",
+        model_config=ResNetConfig(model_name="resnet34", aggregation="median", use_pretrained=True),
+        use_pretrain=False
+    ),
+    "resnet34_imagenet_trimmed_mean": ExperimentConfig(
+        exp_name="resnet34_imagenet_trimmed_mean",
+        model_config=ResNetConfig(model_name="resnet34", aggregation="trimmed_mean", use_pretrained=True),
         use_pretrain=False
     ),
     "resnet34_patch_level": ExperimentConfig(
@@ -339,17 +441,52 @@ EXPERIMENTS = {
         ),
         use_pretrain=False
     ),
+    "resnet34_imagenet_patch_level": ExperimentConfig(
+        exp_name="resnet34_imagenet_patch_level",
+        model_config=ResNetConfig(model_name="resnet34", use_pretrained=True),
+        train_config=TrainConfig(
+            training_mode="patch_level",
+            batch_size=32,
+            patch_level_aggregation="trimmed_mean",
+            patch_level_trim_ratio=0.1
+        ),
+        use_pretrain=False
+    ),
 
     # --- ResNet50 (bottleneck blocks, larger feature dim: 2048) ---
     "resnet50_baseline": ExperimentConfig(
         exp_name="resnet50_baseline",
-        model_config=ResNetConfig(model_name="resnet50", hidden_dim=1024, use_pretrained=False),
+        model_config=ResNetConfig(model_name="resnet50", hidden_dim=1024, aggregation="mean", use_pretrained=False),
         train_config=TrainConfig(batch_size=8),  # Reduced batch size for larger model
+        use_pretrain=False
+    ),
+    "resnet50_median": ExperimentConfig(
+        exp_name="resnet50_median",
+        model_config=ResNetConfig(model_name="resnet50", hidden_dim=1024, aggregation="median", use_pretrained=False),
+        train_config=TrainConfig(batch_size=8),
+        use_pretrain=False
+    ),
+    "resnet50_trimmed_mean": ExperimentConfig(
+        exp_name="resnet50_trimmed_mean",
+        model_config=ResNetConfig(model_name="resnet50", hidden_dim=1024, aggregation="trimmed_mean", use_pretrained=False),
+        train_config=TrainConfig(batch_size=8),
         use_pretrain=False
     ),
     "resnet50_imagenet": ExperimentConfig(
         exp_name="resnet50_imagenet",
-        model_config=ResNetConfig(model_name="resnet50", hidden_dim=1024, use_pretrained=True),
+        model_config=ResNetConfig(model_name="resnet50", hidden_dim=1024, aggregation="mean", use_pretrained=True),
+        train_config=TrainConfig(batch_size=8),
+        use_pretrain=False
+    ),
+    "resnet50_imagenet_median": ExperimentConfig(
+        exp_name="resnet50_imagenet_median",
+        model_config=ResNetConfig(model_name="resnet50", hidden_dim=1024, aggregation="median", use_pretrained=True),
+        train_config=TrainConfig(batch_size=8),
+        use_pretrain=False
+    ),
+    "resnet50_imagenet_trimmed_mean": ExperimentConfig(
+        exp_name="resnet50_imagenet_trimmed_mean",
+        model_config=ResNetConfig(model_name="resnet50", hidden_dim=1024, aggregation="trimmed_mean", use_pretrained=True),
         train_config=TrainConfig(batch_size=8),
         use_pretrain=False
     ),
@@ -364,17 +501,52 @@ EXPERIMENTS = {
         ),
         use_pretrain=False
     ),
+    "resnet50_imagenet_patch_level": ExperimentConfig(
+        exp_name="resnet50_imagenet_patch_level",
+        model_config=ResNetConfig(model_name="resnet50", hidden_dim=1024, use_pretrained=True),
+        train_config=TrainConfig(
+            training_mode="patch_level",
+            batch_size=16,  # Reduced for larger model
+            patch_level_aggregation="trimmed_mean",
+            patch_level_trim_ratio=0.1
+        ),
+        use_pretrain=False
+    ),
 
     # --- ResNet101 (deepest, bottleneck blocks) ---
     "resnet101_baseline": ExperimentConfig(
         exp_name="resnet101_baseline",
-        model_config=ResNetConfig(model_name="resnet101", hidden_dim=1024, use_pretrained=False),
+        model_config=ResNetConfig(model_name="resnet101", hidden_dim=1024, aggregation="mean", use_pretrained=False),
         train_config=TrainConfig(batch_size=4),  # Small batch for largest model
+        use_pretrain=False
+    ),
+    "resnet101_median": ExperimentConfig(
+        exp_name="resnet101_median",
+        model_config=ResNetConfig(model_name="resnet101", hidden_dim=1024, aggregation="median", use_pretrained=False),
+        train_config=TrainConfig(batch_size=4),
+        use_pretrain=False
+    ),
+    "resnet101_trimmed_mean": ExperimentConfig(
+        exp_name="resnet101_trimmed_mean",
+        model_config=ResNetConfig(model_name="resnet101", hidden_dim=1024, aggregation="trimmed_mean", use_pretrained=False),
+        train_config=TrainConfig(batch_size=4),
         use_pretrain=False
     ),
     "resnet101_imagenet": ExperimentConfig(
         exp_name="resnet101_imagenet",
-        model_config=ResNetConfig(model_name="resnet101", hidden_dim=1024, use_pretrained=True),
+        model_config=ResNetConfig(model_name="resnet101", hidden_dim=1024, aggregation="mean", use_pretrained=True),
+        train_config=TrainConfig(batch_size=4),
+        use_pretrain=False
+    ),
+    "resnet101_imagenet_median": ExperimentConfig(
+        exp_name="resnet101_imagenet_median",
+        model_config=ResNetConfig(model_name="resnet101", hidden_dim=1024, aggregation="median", use_pretrained=True),
+        train_config=TrainConfig(batch_size=4),
+        use_pretrain=False
+    ),
+    "resnet101_imagenet_trimmed_mean": ExperimentConfig(
+        exp_name="resnet101_imagenet_trimmed_mean",
+        model_config=ResNetConfig(model_name="resnet101", hidden_dim=1024, aggregation="trimmed_mean", use_pretrained=True),
         train_config=TrainConfig(batch_size=4),
         use_pretrain=False
     ),
@@ -388,6 +560,180 @@ EXPERIMENTS = {
             patch_level_trim_ratio=0.1
         ),
         use_pretrain=False
+    ),
+    "resnet101_imagenet_patch_level": ExperimentConfig(
+        exp_name="resnet101_imagenet_patch_level",
+        model_config=ResNetConfig(model_name="resnet101", hidden_dim=1024, use_pretrained=True),
+        train_config=TrainConfig(
+            training_mode="patch_level",
+            batch_size=8,  # Reduced for largest model
+            patch_level_aggregation="trimmed_mean",
+            patch_level_trim_ratio=0.1
+        ),
+        use_pretrain=False
+    ),
+
+    # ==========================================================================
+    # Position-Aware Aggregation Experiments (City-level)
+    # Compare different aggregation strategies that utilize spatial position info
+    # ==========================================================================
+
+    # --- MLP with different aggregation methods ---
+    "mlp_attention": ExperimentConfig(
+        exp_name="mlp_attention",
+        model_config=MLPConfig(aggregation="attention"),
+        use_pretrain=False
+    ),
+    "mlp_pos_attention": ExperimentConfig(
+        exp_name="mlp_pos_attention",
+        model_config=MLPConfig(aggregation="pos_attention"),
+        use_pretrain=False
+    ),
+    "mlp_spatial_attention": ExperimentConfig(
+        exp_name="mlp_spatial_attention",
+        model_config=MLPConfig(aggregation="spatial_attention"),
+        use_pretrain=False
+    ),
+    "mlp_transformer": ExperimentConfig(
+        exp_name="mlp_transformer",
+        model_config=MLPConfig(aggregation="transformer"),
+        use_pretrain=False
+    ),
+    "mlp_transformer_2d": ExperimentConfig(
+        exp_name="mlp_transformer_2d",
+        model_config=MLPConfig(aggregation="transformer_2d"),
+        use_pretrain=False
+    ),
+
+    # --- LightCNN with different aggregation methods ---
+    "light_cnn_attention": ExperimentConfig(
+        exp_name="light_cnn_attention",
+        model_config=LightCNNConfig(aggregation="attention"),
+        use_pretrain=False
+    ),
+    "light_cnn_pos_attention": ExperimentConfig(
+        exp_name="light_cnn_pos_attention",
+        model_config=LightCNNConfig(aggregation="pos_attention"),
+        use_pretrain=False
+    ),
+    "light_cnn_spatial_attention": ExperimentConfig(
+        exp_name="light_cnn_spatial_attention",
+        model_config=LightCNNConfig(aggregation="spatial_attention"),
+        use_pretrain=False
+    ),
+    "light_cnn_transformer": ExperimentConfig(
+        exp_name="light_cnn_transformer",
+        model_config=LightCNNConfig(aggregation="transformer"),
+        use_pretrain=False
+    ),
+    "light_cnn_transformer_2d": ExperimentConfig(
+        exp_name="light_cnn_transformer_2d",
+        model_config=LightCNNConfig(aggregation="transformer_2d"),
+        use_pretrain=False
+    ),
+
+    # --- ResNet18 with different aggregation methods ---
+    "resnet18_attention": ExperimentConfig(
+        exp_name="resnet18_attention",
+        model_config=ResNetConfig(model_name="resnet18", aggregation="attention"),
+        use_pretrain=False
+    ),
+    "resnet18_pos_attention": ExperimentConfig(
+        exp_name="resnet18_pos_attention",
+        model_config=ResNetConfig(model_name="resnet18", aggregation="pos_attention"),
+        use_pretrain=False
+    ),
+    "resnet18_spatial_attention": ExperimentConfig(
+        exp_name="resnet18_spatial_attention",
+        model_config=ResNetConfig(model_name="resnet18", aggregation="spatial_attention"),
+        use_pretrain=False
+    ),
+    "resnet18_transformer": ExperimentConfig(
+        exp_name="resnet18_transformer",
+        model_config=ResNetConfig(model_name="resnet18", aggregation="transformer"),
+        use_pretrain=False
+    ),
+    "resnet18_transformer_2d": ExperimentConfig(
+        exp_name="resnet18_transformer_2d",
+        model_config=ResNetConfig(model_name="resnet18", aggregation="transformer_2d"),
+        use_pretrain=False
+    ),
+
+    # --- SimCLR pretraining + different aggregation methods ---
+    "simclr_cnn_attention": ExperimentConfig(
+        exp_name="simclr_cnn_attention",
+        model_config=LightCNNConfig(aggregation="attention"),
+        pretrain_config=SimCLRConfig(encoder_type="light_cnn"),
+        use_pretrain=True
+    ),
+    "simclr_cnn_pos_attention": ExperimentConfig(
+        exp_name="simclr_cnn_pos_attention",
+        model_config=LightCNNConfig(aggregation="pos_attention"),
+        pretrain_config=SimCLRConfig(encoder_type="light_cnn"),
+        use_pretrain=True
+    ),
+    "simclr_cnn_spatial_attention": ExperimentConfig(
+        exp_name="simclr_cnn_spatial_attention",
+        model_config=LightCNNConfig(aggregation="spatial_attention"),
+        pretrain_config=SimCLRConfig(encoder_type="light_cnn"),
+        use_pretrain=True
+    ),
+    "simclr_cnn_transformer": ExperimentConfig(
+        exp_name="simclr_cnn_transformer",
+        model_config=LightCNNConfig(aggregation="transformer"),
+        pretrain_config=SimCLRConfig(encoder_type="light_cnn"),
+        use_pretrain=True
+    ),
+    "simclr_cnn_transformer_2d": ExperimentConfig(
+        exp_name="simclr_cnn_transformer_2d",
+        model_config=LightCNNConfig(aggregation="transformer_2d"),
+        pretrain_config=SimCLRConfig(encoder_type="light_cnn"),
+        use_pretrain=True
+    ),
+
+    # --- MAE pretraining + different aggregation methods ---
+    "mae_cnn_patch_level": ExperimentConfig(
+        exp_name="mae_cnn_patch_level",
+        model_config=LightCNNConfig(),
+        train_config=TrainConfig(
+            training_mode="patch_level",
+            batch_size=8,  # Reduced for MAE pretrain (city-level data is large)
+            patch_level_aggregation="trimmed_mean",
+            patch_level_trim_ratio=0.1
+        ),
+        pretrain_config=MAEConfig(encoder_type="light_cnn"),
+        use_pretrain=True,
+        num_workers=2  # Reduced to avoid OOM during pretrain
+    ),
+    "mae_cnn_attention": ExperimentConfig(
+        exp_name="mae_cnn_attention",
+        model_config=LightCNNConfig(aggregation="attention"),
+        pretrain_config=MAEConfig(encoder_type="light_cnn"),
+        use_pretrain=True
+    ),
+    "mae_cnn_pos_attention": ExperimentConfig(
+        exp_name="mae_cnn_pos_attention",
+        model_config=LightCNNConfig(aggregation="pos_attention"),
+        pretrain_config=MAEConfig(encoder_type="light_cnn"),
+        use_pretrain=True
+    ),
+    "mae_cnn_spatial_attention": ExperimentConfig(
+        exp_name="mae_cnn_spatial_attention",
+        model_config=LightCNNConfig(aggregation="spatial_attention"),
+        pretrain_config=MAEConfig(encoder_type="light_cnn"),
+        use_pretrain=True
+    ),
+    "mae_cnn_transformer": ExperimentConfig(
+        exp_name="mae_cnn_transformer",
+        model_config=LightCNNConfig(aggregation="transformer"),
+        pretrain_config=MAEConfig(encoder_type="light_cnn"),
+        use_pretrain=True
+    ),
+    "mae_cnn_transformer_2d": ExperimentConfig(
+        exp_name="mae_cnn_transformer_2d",
+        model_config=LightCNNConfig(aggregation="transformer_2d"),
+        pretrain_config=MAEConfig(encoder_type="light_cnn"),
+        use_pretrain=True
     ),
 }
 
@@ -409,6 +755,9 @@ def print_config(config: ExperimentConfig):
     if config.train_config.training_mode == "patch_level":
         print(f"  Patch Aggregation: {config.train_config.patch_level_aggregation}")
         print(f"  Trim Ratio: {config.train_config.patch_level_trim_ratio}")
+    else:
+        # City-level mode - show model aggregation
+        print(f"  Aggregation: {config.model_config.aggregation}")
     print(f"  Use Pretrain: {config.use_pretrain}")
     if config.use_pretrain and config.pretrain_config:
         print(f"  Pretrain Method: {config.pretrain_config.name}")

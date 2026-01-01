@@ -14,6 +14,7 @@ from typing import List, Optional
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
+from models.aggregators import get_aggregator
 
 
 class MLPBlock(nn.Module):
@@ -88,30 +89,6 @@ class PatchMLP(nn.Module):
         return x
 
 
-class AttentionAggregator(nn.Module):
-    """Attention-based aggregation of patch features."""
-
-    def __init__(self, feature_dim: int, hidden_dim: int = 64):
-        super().__init__()
-        self.attention = nn.Sequential(
-            nn.Linear(feature_dim, hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, 1)
-        )
-
-    def forward(self, x):
-        """
-        Args:
-            x: (batch, num_patches, feature_dim)
-        Returns:
-            (batch, feature_dim)
-        """
-        attn_weights = self.attention(x)  # (batch, num_patches, 1)
-        attn_weights = F.softmax(attn_weights, dim=1)
-        out = (x * attn_weights).sum(dim=1)
-        return out
-
-
 class MLPModel(nn.Module):
     """
     MLP-based model for population growth prediction.
@@ -146,8 +123,14 @@ class MLPModel(nn.Module):
         feature_dim = self.encoder.output_dim
 
         # Aggregation (only used in city_level mode)
-        if self.aggregation_type == "attention" and not patch_level:
-            self.aggregator = AttentionAggregator(feature_dim)
+        if not patch_level:
+            self.aggregator = get_aggregator(
+                aggregation_type=self.aggregation_type,
+                feature_dim=feature_dim,
+                num_patches=config.NUM_PATCHES_TOTAL,
+                grid_size=config.NUM_PATCHES_PER_DIM,
+                dropout=model_config.dropout_rate
+            )
         else:
             self.aggregator = None
 
@@ -188,10 +171,13 @@ class MLPModel(nn.Module):
             # Aggregate across patches
             if self.aggregation_type == "mean":
                 aggregated = features.mean(dim=1)
-            elif self.aggregation_type == "attention":
-                aggregated = self.aggregator(features)
+            elif self.aggregation_type == "median":
+                aggregated = features.median(dim=1).values
             elif self.aggregation_type == "trimmed_mean":
                 aggregated = self._trimmed_mean(features)
+            elif self.aggregator is not None:
+                # Use advanced aggregator (attention, pos_attention, transformer, etc.)
+                aggregated = self.aggregator(features)
             else:
                 aggregated = features.mean(dim=1)
 

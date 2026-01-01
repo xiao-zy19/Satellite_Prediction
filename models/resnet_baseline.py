@@ -21,6 +21,7 @@ from torchvision.models import ResNet18_Weights, ResNet34_Weights, ResNet50_Weig
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
+from models.aggregators import get_aggregator
 
 
 # =============================================================================
@@ -263,24 +264,6 @@ class ResNetEncoder(nn.Module):
         return self.feature_dim
 
 
-class AttentionAggregator(nn.Module):
-    """Attention-based aggregation."""
-
-    def __init__(self, feature_dim: int, hidden_dim: int = 256):
-        super().__init__()
-        self.attention = nn.Sequential(
-            nn.Linear(feature_dim, hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, 1)
-        )
-
-    def forward(self, x):
-        attn_weights = self.attention(x)
-        attn_weights = F.softmax(attn_weights, dim=1)
-        out = (x * attn_weights).sum(dim=1)
-        return out
-
-
 class ResNetBaseline(nn.Module):
     """
     ResNet baseline model for population growth prediction.
@@ -309,8 +292,14 @@ class ResNetBaseline(nn.Module):
         feature_dim = self.encoder.output_dim
 
         # Aggregation (only used in city_level mode)
-        if self.aggregation_type == "attention" and not patch_level:
-            self.aggregator = AttentionAggregator(feature_dim, model_config.hidden_dim // 2)
+        if not patch_level:
+            self.aggregator = get_aggregator(
+                aggregation_type=self.aggregation_type,
+                feature_dim=feature_dim,
+                num_patches=config.NUM_PATCHES_TOTAL,
+                grid_size=config.NUM_PATCHES_PER_DIM,
+                dropout=model_config.dropout_rate
+            )
         else:
             self.aggregator = None
 
@@ -354,10 +343,13 @@ class ResNetBaseline(nn.Module):
             # Aggregate across patches
             if self.aggregation_type == "mean":
                 aggregated = features.mean(dim=1)
-            elif self.aggregation_type == "attention":
-                aggregated = self.aggregator(features)
+            elif self.aggregation_type == "median":
+                aggregated = features.median(dim=1).values
             elif self.aggregation_type == "trimmed_mean":
                 aggregated = self._trimmed_mean(features)
+            elif self.aggregator is not None:
+                # Use advanced aggregator (attention, pos_attention, transformer, etc.)
+                aggregated = self.aggregator(features)
             else:
                 aggregated = features.mean(dim=1)
 
