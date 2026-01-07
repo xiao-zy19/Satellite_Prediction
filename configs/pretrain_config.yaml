@@ -1,0 +1,131 @@
+# MAE Pretrain Configuration for 64-channel Satellite Embeddings
+# 针对~660个城市样本优化的配置
+
+# =============================================================================
+# 数据配置
+# =============================================================================
+data:
+  # Satellite feature data directory
+  data_dir: "./data/satellite_tiles"
+
+  # 数据格式
+  input_channels: 64      # Alpha Earth嵌入通道数
+  image_size: 980         # 输入图像尺寸 (需要能被patch_size整除)
+  patch_size: 14          # ViT patch大小
+
+  # 数据增强 (针对小数据集 ~660 样本)
+  samples_per_file: 50    # 每个原始文件生成的增强样本数 (660*50=33000)
+  augment: true           # 启用数据增强
+  use_multi_crop: true    # 启用多尺度随机裁剪
+  crop_scales: [1.0, 0.8, 0.6]  # 裁剪尺度
+  normalize: true         # 数据归一化
+
+# =============================================================================
+# 模型配置
+# =============================================================================
+model:
+  # 基础模型
+  name: "Qwen/Qwen2-VL-7B-Instruct"
+  input_channels: 64
+  patch_size: 14
+  image_size: 980
+  encoder_dim: 1024
+
+  # Vision encoder modifications
+  vision_encoder:
+    modify_input_layer: true
+    init_new_channels: "normal"  # "normal", "zero", "copy"
+    init_std: 0.02
+
+# =============================================================================
+# MAE配置
+# =============================================================================
+mae:
+  # Mask比例 (标准MAE使用75%)
+  mask_ratio: 0.75
+
+  # 解码器配置
+  decoder_dim: 512
+  decoder_depth: 4
+  decoder_num_heads: 8
+  decoder_heads: 8
+
+  # 损失函数
+  norm_pix_loss: true     # 归一化像素级损失
+
+# =============================================================================
+# 训练配置
+# =============================================================================
+training:
+  # 基础训练参数
+  batch_size: 8           # 每GPU的batch大小
+  gradient_accumulation_steps: 2
+  num_epochs: 10          # 训练轮数
+
+  # 优化器
+  learning_rate: 1.0e-4   # 学习率
+  weight_decay: 0.05      # 权重衰减
+
+  # 优化器参数
+  optimizer:
+    type: "AdamW"
+    betas: [0.9, 0.95]
+    eps: 1.0e-8
+
+  # 学习率调度
+  warmup_epochs: 1        # 预热轮数
+  scheduler:
+    type: "cosine"
+  min_lr: 1.0e-6          # 最小学习率
+
+  # 梯度裁剪
+  max_grad_norm: 1.0
+
+  # 混合精度
+  precision: "bf16"       # "fp32", "fp16", "bf16"
+
+# =============================================================================
+# 分布式训练 (可选)
+# =============================================================================
+distributed:
+  enabled: false          # 单机训练时设为false
+  strategy: "deepspeed_zero3"
+  num_gpus: 8
+
+# DeepSpeed配置 (多卡训练时使用)
+deepspeed:
+  zero_optimization:
+    stage: 3
+    offload_optimizer:
+      device: "cpu"
+      pin_memory: true
+    offload_param:
+      device: "none"
+    overlap_comm: true
+    contiguous_gradients: true
+    reduce_bucket_size: 5.0e+8
+    stage3_prefetch_bucket_size: 5.0e+8
+    stage3_param_persistence_threshold: 1.0e+6
+
+# =============================================================================
+# 保存和日志
+# =============================================================================
+logging:
+  log_interval: 100       # 每N步记录日志
+  save_interval: 1000     # 每N步保存检查点
+  eval_interval: 500
+
+  # Wandb
+  use_wandb: false        # 是否启用wandb
+  wandb_project: "mllm-satellite-pretrain"
+
+checkpoint:
+  save_dir: "checkpoints/pretrain"
+  save_total_limit: 3     # 最多保留检查点数
+  resume_from: null       # 从检查点恢复
+
+# =============================================================================
+# 其他
+# =============================================================================
+seed: 42                  # 随机种子
+debug: false              # 调试模式

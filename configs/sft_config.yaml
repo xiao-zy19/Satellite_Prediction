@@ -1,0 +1,113 @@
+# SFT (Supervised Fine-Tuning) Configuration
+
+# Model configuration
+model:
+  pretrained_path: "checkpoints/pretrain/final"  # Path to pretrained checkpoint
+  base_model: "Qwen/Qwen2-VL-7B-Instruct"
+  input_channels: 64
+
+  # LoRA configuration (optional, for memory efficiency)
+  use_lora: true
+  lora:
+    r: 64
+    alpha: 128
+    dropout: 0.05
+    target_modules: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+
+# Task configuration
+task:
+  name: "population_growth_prediction"
+  output_type: "regression"  # Extract number from text output
+
+  # Prompt template
+  system_prompt: |
+    你是一个遥感影像分析专家，专门分析城市卫星影像并预测人口统计指标。
+    请根据提供的卫星影像特征，分析城市发展状况并预测人口自然增长率。
+
+  user_prompt_template: |
+    请分析这张城市卫星影像，根据以下因素预测该城市的人口自然增长率：
+    - 建筑密度和城市化程度
+    - 绿地覆盖率
+    - 道路网络密度
+    - 基础设施发展程度
+
+    请以"预测值：X.XX‰"的格式给出你的预测结果。
+
+  assistant_template: |
+    根据对卫星影像的分析，该城市呈现以下特征：
+    {analysis}
+
+    综合以上因素，该城市的人口自然增长率预测为：{value}‰
+
+# Training configuration
+training:
+  batch_size: 4  # Per GPU
+  gradient_accumulation_steps: 4
+  num_epochs: 20
+  learning_rate: 1.0e-5
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+
+  # Optimizer
+  optimizer:
+    type: "AdamW"
+    betas: [0.9, 0.999]
+    eps: 1.0e-8
+
+  # Scheduler
+  scheduler:
+    type: "cosine"
+
+  # Mixed precision
+  precision: "bf16"
+
+  # Gradient clipping
+  max_grad_norm: 1.0
+
+  # Loss configuration
+  loss:
+    type: "combined"  # "ce" for cross-entropy, "mse" for regression, "combined" for both
+    ce_weight: 0.5
+    mse_weight: 0.5
+
+# Freeze configuration (for staged training)
+freeze:
+  freeze_encoder_epochs: 5  # Freeze encoder for first N epochs
+  unfreeze_learning_rate: 1.0e-6  # Lower LR after unfreezing
+
+# Distributed training
+distributed:
+  enabled: true
+  strategy: "deepspeed_zero2"
+  num_gpus: 8
+
+# Data configuration
+data:
+  train_ratio: 0.8
+  val_ratio: 0.1
+  test_ratio: 0.1
+  seed: 42
+
+# Logging
+logging:
+  log_interval: 50
+  save_interval: 500
+  eval_interval: 200
+  use_wandb: true
+  wandb_project: "mllm-satellite-sft"
+
+# Checkpointing
+checkpoint:
+  save_dir: "checkpoints/sft"
+  save_total_limit: 5
+  resume_from: null
+  save_best_only: true
+  metric_for_best: "val_r2"
+
+# Early stopping
+early_stopping:
+  enabled: true
+  patience: 5
+  min_delta: 0.001
+  metric: "val_r2"
+  mode: "max"

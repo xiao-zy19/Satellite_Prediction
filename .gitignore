@@ -1,0 +1,85 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyTorch / ML Models
+*.pt
+*.pth
+*.onnx
+*.bin
+checkpoints/
+*.ckpt
+
+# Training artifacts
+wandb/
+logs/
+*.log
+tensorboard/
+runs/
+
+# Cache
+cache/
+*.pkl
+*.npy
+*.npz
+.cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data (large files)
+data_local/
+*.tiff
+*.tif
+*.h5
+*.hdf5
+
+# Results (can be regenerated)
+results/
+
+# Environment
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Temporary files
+*.tmp
+*.temp
+=4.45.0
+
+# Credentials
+*.key
+*secret*
+*credential*
+*password*

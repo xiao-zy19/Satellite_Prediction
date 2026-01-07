@@ -1,0 +1,108 @@
+# RL (Reinforcement Learning) Configuration
+# Supports DPO and GRPO
+
+# Model configuration
+model:
+  sft_checkpoint: "checkpoints/sft/best"  # Path to SFT checkpoint
+  base_model: "Qwen/Qwen2-VL-7B-Instruct"
+  input_channels: 64
+
+  # LoRA configuration
+  use_lora: true
+  lora:
+    r: 32
+    alpha: 64
+    dropout: 0.05
+    target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+
+# RL method selection
+rl_method: "dpo"  # "dpo" or "grpo"
+
+# DPO configuration
+dpo:
+  beta: 0.1  # KL penalty coefficient
+  reference_free: false  # Use reference model for KL
+  loss_type: "sigmoid"  # "sigmoid" or "hinge"
+
+  # Preference data generation
+  preference_data:
+    num_samples_per_image: 5  # Generate 5 outputs per image
+    temperature: 0.7
+    top_p: 0.9
+
+# GRPO configuration (alternative to DPO)
+grpo:
+  group_size: 8  # Number of outputs per group
+  kl_coef: 0.1
+  reward_baseline: "mean"  # "mean" or "min"
+
+  # Reward function
+  reward:
+    type: "negative_error"  # reward = -|prediction - true_value|
+    normalize: true
+    clip_range: [-10.0, 0.0]
+
+# Training configuration
+training:
+  batch_size: 2  # Per GPU
+  gradient_accumulation_steps: 8
+  num_epochs: 5
+  learning_rate: 1.0e-6
+  weight_decay: 0.01
+  warmup_ratio: 0.1
+
+  # Optimizer
+  optimizer:
+    type: "AdamW"
+    betas: [0.9, 0.999]
+    eps: 1.0e-8
+
+  # Scheduler
+  scheduler:
+    type: "cosine"
+
+  # Mixed precision
+  precision: "bf16"
+
+  # Gradient clipping
+  max_grad_norm: 0.5
+
+# Reference model (for DPO)
+reference_model:
+  use_reference: true
+  share_base_weights: true  # Share weights with policy model
+
+# Distributed training
+distributed:
+  enabled: true
+  strategy: "deepspeed_zero2"
+  num_gpus: 8
+
+# Sampling configuration (for generating preference pairs)
+sampling:
+  max_new_tokens: 256
+  temperature: 0.7
+  top_p: 0.9
+  do_sample: true
+  num_return_sequences: 5
+
+# Logging
+logging:
+  log_interval: 20
+  save_interval: 200
+  eval_interval: 100
+  use_wandb: true
+  wandb_project: "mllm-satellite-rl"
+
+# Checkpointing
+checkpoint:
+  save_dir: "checkpoints/rl"
+  save_total_limit: 3
+  resume_from: null
+  save_best_only: true
+  metric_for_best: "val_r2"
+
+# Evaluation
+evaluation:
+  metrics: ["r2", "mae", "rmse", "pearson_r"]
+  eval_every_n_steps: 100

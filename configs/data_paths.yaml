@@ -1,0 +1,70 @@
+# Data paths configuration for MLLM Training
+# Please modify these paths according to your environment
+
+# =============================================================================
+# Data Directories
+# =============================================================================
+data:
+  # Satellite feature data directory (contains province/city/year_city.tiff structure)
+  satellite_data_dir: "./data/satellite_tiles"
+
+  # Population label data
+  population_labels: "./data/population_data.xlsx"
+
+  # Cache directories
+  cache_dir: "./cache"
+  npy_cache_dir: "./cache/npy"
+  pca_model_path: "./cache/pca_64to3.pkl"
+
+  # Data specifications
+  specs:
+    input_channels: 64          # Alpha Earth embedding channels
+    original_image_size: 1000   # Original image size
+    target_image_size: 980      # Target image size (aligned to patch_size=14)
+    patch_size: 14              # ViT patch size
+    num_patches_per_dim: 70     # 980 / 14 = 70
+    total_patches: 4900         # 70 * 70
+
+# =============================================================================
+# Dataset Statistics (based on actual data)
+# =============================================================================
+dataset_stats:
+  # Number of original files
+  num_original_files: 660       # ~110 cities × 6 years
+
+  # Data range
+  data_dtype: "int8"
+  data_min: -87
+  data_max: 91
+  data_mean: -3.49
+  data_std: 39.69
+
+  # Number of provinces
+  num_provinces: 23
+
+  # Year range
+  year_range: [2018, 2023]
+
+# =============================================================================
+# Output Directories
+# =============================================================================
+output:
+  # Checkpoint directories
+  checkpoints_dir: "./checkpoints"
+  pretrain_dir: "./checkpoints/pretrain"
+  sft_dir: "./checkpoints/sft"
+  rl_dir: "./checkpoints/rl"
+
+  # Log directory
+  logs_dir: "./logs"
+
+  # Results directory
+  results_dir: "./results"
+
+# =============================================================================
+# Baseline Comparison (optional)
+# =============================================================================
+baseline:
+  # Baseline project directory
+  project_dir: "../Baseline_Pretrain"
+  results_dir: "../Baseline_Pretrain/results"
