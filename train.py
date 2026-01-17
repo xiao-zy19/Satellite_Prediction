@@ -63,18 +63,27 @@ def create_model(model_config, patch_level: bool = False):
         raise ValueError(f"Unknown model: {model_config.name}")
 
 
-def init_wandb(exp_config: ExperimentConfig, dataset_info: dict) -> bool:
-    """Initialize wandb."""
+def init_wandb(exp_config: ExperimentConfig, dataset_info: dict, seed: int, run_id: str) -> bool:
+    """Initialize wandb.
+
+    Args:
+        exp_config: Experiment configuration
+        dataset_info: Dataset information dict
+        seed: Random seed used for this run
+        run_id: Unique run identifier (includes seed if non-default)
+    """
     if not exp_config.wandb_enabled or not WANDB_AVAILABLE:
         return False
 
     # 在实验名称中加入时间戳，便于查找
     from datetime import datetime
     timestamp = datetime.now().strftime("%m%d_%H%M")
-    run_name = f"{exp_config.exp_name}_{timestamp}"
+    run_name = f"{run_id}_{timestamp}"
 
     wandb_config = {
         "experiment": exp_config.exp_name,
+        "run_id": run_id,
+        "seed": seed,
         "model": exp_config.model_config.name,
         "use_pretrain": exp_config.use_pretrain,
         "pretrain_method": exp_config.pretrain_config.name if exp_config.pretrain_config else "none",
@@ -110,7 +119,8 @@ class Trainer:
         logger=None,
         use_wandb: bool = False,
         test_loader: DataLoader = None,
-        is_patch_level: bool = False
+        is_patch_level: bool = False,
+        run_id: str = None
     ):
         self.model = model.to(device)
         self.train_loader = train_loader
@@ -122,6 +132,7 @@ class Trainer:
         self.logger = logger
         self.use_wandb = use_wandb
         self.is_patch_level = is_patch_level  # Patch-level mode flag
+        self.run_id = run_id if run_id else exp_config.exp_name  # 用于保存 checkpoint
 
         # Loss function
         self.criterion = nn.MSELoss()
@@ -338,7 +349,7 @@ class Trainer:
                         'val_metrics': {agg: val_results[agg]['metrics'] for agg in val_results}
                     }
                     print(f"  >> New best model! (trimmed_mean R²={primary_metric:.4f})")
-                    save_checkpoint(self.best_model_state, self.exp_config.exp_name, 'best_model.pth')
+                    save_checkpoint(self.best_model_state, self.run_id, 'best_model.pth')
 
                 # Early stopping (based on trimmed_mean R²)
                 if early_stopping(primary_metric):
@@ -408,7 +419,7 @@ class Trainer:
                         'val_metrics': val_metrics
                     }
                     print(f"  >> New best model! (R²={primary_metric:.4f})")
-                    save_checkpoint(self.best_model_state, self.exp_config.exp_name, 'best_model.pth')
+                    save_checkpoint(self.best_model_state, self.run_id, 'best_model.pth')
 
                 # Early stopping (based on val R²)
                 if early_stopping(primary_metric):
@@ -596,13 +607,21 @@ def run_experiment(exp_name: str, gpu_id: int = 3, seed: int = config.RANDOM_SEE
     exp_config = get_experiment_config(exp_name)
     print_config(exp_config)
 
+    # Create run_id that includes seed for unique identification
+    # This ensures checkpoints/results don't overwrite each other when using different seeds
+    if seed != config.RANDOM_SEED:
+        run_id = f"{exp_name}_seed{seed}"
+    else:
+        run_id = exp_name
+
     # Set seed for reproducibility
     print(f"Setting random seed: {seed}")
+    print(f"Run ID: {run_id}")
     set_seed(seed)
 
     # Setup logging
-    logger = setup_logging(exp_name)
-    logger.info(f"Starting experiment: {exp_name}")
+    logger = setup_logging(run_id)
+    logger.info(f"Starting experiment: {exp_name} (run_id: {run_id}, seed: {seed})")
 
     # Device
     device = get_device(exp_config.device)
@@ -634,7 +653,7 @@ def run_experiment(exp_name: str, gpu_id: int = 3, seed: int = config.RANDOM_SEE
         )
 
     # Init wandb
-    use_wandb = init_wandb(exp_config, dataset_info)
+    use_wandb = init_wandb(exp_config, dataset_info, seed, run_id)
 
     # Create model
     logger.info("Creating model...")
@@ -661,7 +680,7 @@ def run_experiment(exp_name: str, gpu_id: int = 3, seed: int = config.RANDOM_SEE
                 exp_config.train_config,
                 device,
                 logger,
-                exp_name=exp_config.exp_name
+                exp_name=run_id  # Use run_id to include seed in checkpoint path
             )
             logger.info("SimCLR pretraining completed")
 
@@ -672,7 +691,7 @@ def run_experiment(exp_name: str, gpu_id: int = 3, seed: int = config.RANDOM_SEE
                 exp_config.train_config,
                 device,
                 logger,
-                exp_name=exp_config.exp_name
+                exp_name=run_id  # Use run_id to include seed in checkpoint path
             )
             logger.info("MAE pretraining completed")
 
@@ -707,7 +726,8 @@ def run_experiment(exp_name: str, gpu_id: int = 3, seed: int = config.RANDOM_SEE
         logger=logger,
         use_wandb=use_wandb,
         test_loader=test_loader,
-        is_patch_level=is_patch_level
+        is_patch_level=is_patch_level,
+        run_id=run_id  # Use run_id for checkpoint saving
     )
 
     # Train with frozen encoder first (if applicable)
@@ -843,7 +863,7 @@ def run_experiment(exp_name: str, gpu_id: int = 3, seed: int = config.RANDOM_SEE
             'test_info': test_info
         }
 
-    results_path = os.path.join(config.RESULT_DIR, f'{exp_name}_results.pkl')
+    results_path = os.path.join(config.RESULT_DIR, f'{run_id}_results.pkl')
     with open(results_path, 'wb') as f:
         pickle.dump(results, f)
     logger.info(f"Results saved to {results_path}")

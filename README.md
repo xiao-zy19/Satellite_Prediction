@@ -70,7 +70,11 @@ python train.py --exp light_cnn_baseline --gpu 3
 
 # 指定随机种子以复现实验（默认 seed=42）
 python train.py --exp mlp_baseline --gpu 3 --seed 42
-python train.py --exp mlp_baseline --gpu 3 --seed 123  # 使用不同 seed
+
+# 使用不同 seed（结果自动保存到不同文件，不会覆盖）
+python train.py --exp mlp_baseline --gpu 3 --seed 123
+# 输出: results/mlp_baseline_seed123_results.pkl
+# 模型: checkpoints/mlp_baseline_seed123/best_model.pth
 
 # 基础聚合方法对比（median, trimmed_mean）
 python train.py --exp mlp_median --gpu 3
@@ -474,7 +478,25 @@ python train.py --exp mlp_baseline --gpu 3 --seed 42
 - 模型初始化：使用 seed 控制权重初始化
 - 训练过程：固定 `torch.backends.cudnn.deterministic = True`
 
-**注意**：结果会保存到 `results/{exp_name}_results.pkl`，其中包含使用的 seed 值。
+**多种子运行**（用于统计显著性测试）：
+
+```bash
+# 单独运行不同种子（结果文件不会覆盖）
+python train.py --exp mlp_baseline --gpu 3 --seed 42   # -> results/mlp_baseline_results.pkl
+python train.py --exp mlp_baseline --gpu 3 --seed 123  # -> results/mlp_baseline_seed123_results.pkl
+python train.py --exp mlp_baseline --gpu 3 --seed 456  # -> results/mlp_baseline_seed456_results.pkl
+
+# 或使用批量脚本
+bash scripts/run_simple.sh --exp mlp_baseline --seeds 42,123,456
+```
+
+**输出文件命名规则**：
+
+| Seed | run_id | 结果文件 | Checkpoint 目录 |
+|------|--------|----------|-----------------|
+| 42 (默认) | `mlp_baseline` | `mlp_baseline_results.pkl` | `checkpoints/mlp_baseline/` |
+| 123 | `mlp_baseline_seed123` | `mlp_baseline_seed123_results.pkl` | `checkpoints/mlp_baseline_seed123/` |
+| 456 | `mlp_baseline_seed456` | `mlp_baseline_seed456_results.pkl` | `checkpoints/mlp_baseline_seed456/` |
 
 ---
 
@@ -538,10 +560,85 @@ python train.py --exp <experiment_name> --gpu <gpu_id> [--seed <random_seed>]
 - `--gpu`: GPU ID（默认: 3）
 - `--seed`: 随机种子，用于复现实验（默认: 42）
 
-**输出**:
-- `checkpoints/{exp_name}/best_model.pth`: 最佳模型
-- `logs/{exp_name}_{timestamp}.log`: 训练日志
-- `results/{exp_name}_results.pkl`: 完整结果
+**输出路径**（根据 seed 自动命名）:
+
+| Seed | Checkpoint | Results | Logs |
+|------|------------|---------|------|
+| 42 (默认) | `checkpoints/{exp}/` | `results/{exp}_results.pkl` | `logs/{exp}_{timestamp}.log` |
+| 其他 | `checkpoints/{exp}_seed{seed}/` | `results/{exp}_seed{seed}_results.pkl` | `logs/{exp}_seed{seed}_{timestamp}.log` |
+
+### 批量运行脚本 (`scripts/run_simple.sh`)
+
+使用 tmux 管理的并行实验运行脚本，支持多 GPU 并行和多种子运行。
+
+```bash
+cd scripts
+
+# 查看帮助
+bash run_simple.sh --help
+
+# 列出所有实验
+bash run_simple.sh --list
+
+# 预览要运行的实验
+bash run_simple.sh --category baseline --dry-run
+```
+
+**单种子运行**:
+```bash
+# 使用默认种子 (42) 运行所有实验
+bash run_simple.sh --category all
+
+# 使用指定种子运行
+bash run_simple.sh --category baseline --seed 123
+
+# 指定 GPU
+bash run_simple.sh --category resnet --gpus 0,1,2,3
+
+# 跳过已完成的实验
+bash run_simple.sh --category all --resume
+```
+
+**多种子运行**（每个实验运行多次）:
+```bash
+# 使用 3 个种子运行 baseline 实验
+# 6 个实验 × 3 个种子 = 18 个任务
+bash run_simple.sh --category baseline --seeds 42,123,456
+
+# 预览多种子任务
+bash run_simple.sh --category baseline --seeds 42,123,456 --dry-run
+# 输出:
+#   1. mlp_baseline (seed=42)
+#   2. mlp_baseline (seed=123)
+#   3. mlp_baseline (seed=456)
+#   4. mlp_median (seed=42)
+#   ...
+```
+
+**可用实验类别**:
+
+| 类别 | 说明 | 实验数量 |
+|------|------|---------|
+| `all` | 所有实验 | 80 |
+| `baseline` | MLP/CNN 无预训练 | 6 |
+| `ssl` | SimCLR/MAE 预训练 | 9 |
+| `patch` | Patch-level 训练 | 4 |
+| `resnet` | 所有 ResNet 实验 | 40 |
+| `resnet10/18/34/50/101` | 特定 ResNet 版本 | 4-13 |
+| `agg` | Position-Aware 聚合 | 25 |
+
+**参数说明**:
+
+| 参数 | 说明 | 示例 |
+|------|------|------|
+| `--gpus` | 指定 GPU 列表 | `--gpus 0,1,2,3` |
+| `--parallel` | 并行数量 | `--parallel 4` |
+| `--category` | 实验类别 | `--category baseline` |
+| `--exp` | 指定实验名称 | `--exp mlp_baseline,light_cnn_baseline` |
+| `--seed` | 单个随机种子 | `--seed 123` |
+| `--seeds` | 多个随机种子 | `--seeds 42,123,456` |
+| `--resume` | 跳过已完成实验 | `--resume` |
+| `--dry-run` | 预览模式 | `--dry-run` |
 
 ### 评估 (`evaluate.py`)
 
@@ -596,6 +693,36 @@ wandb>=0.15.0
 ---
 
 ## 更新日志
+
+### v2.5 (2026-01-02)
+
+**重大更新：多种子运行支持与批量实验脚本**
+
+#### 多种子运行支持
+- **独立存储**: 不同 seed 的结果自动保存到不同文件，不会互相覆盖
+  - 默认 seed (42): `{exp}_results.pkl`, `checkpoints/{exp}/`
+  - 其他 seed: `{exp}_seed{seed}_results.pkl`, `checkpoints/{exp}_seed{seed}/`
+- **run_id 机制**: 引入 `run_id` 标识符，统一管理 checkpoint、results、logs、wandb
+- **统计显著性**: 支持多种子运行，便于计算均值和标准差
+
+#### 批量运行脚本完善 (`scripts/run_simple.sh`)
+- **实验配置更新**: 与 `config.py` 完全同步，共 80 个实验
+- **多种子支持**: 新增 `--seed` 和 `--seeds` 参数
+  - `--seed 123`: 使用指定种子运行
+  - `--seeds 42,123,456`: 使用多个种子运行（每个实验运行多次）
+- **实验类别**: 支持按类别选择实验 (`baseline`, `ssl`, `patch`, `resnet`, `agg` 等)
+- **Resume 功能**: 根据 seed 正确判断是否已完成
+
+#### 代码修改
+- `train.py`:
+  - 新增 `run_id` 变量，根据 seed 自动生成唯一标识
+  - `Trainer` 类新增 `run_id` 参数
+  - `init_wandb()` 支持 seed 和 run_id 参数
+  - 结果/checkpoint 保存路径使用 run_id
+- `scripts/run_simple.sh`:
+  - 实验列表与 config.py 同步
+  - 支持 `--seed` 和 `--seeds` 参数
+  - Resume 逻辑适配新的文件命名
 
 ### v2.4 (2026-01-01)
 
