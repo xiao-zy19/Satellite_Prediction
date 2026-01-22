@@ -13,6 +13,7 @@ from .aggregators import (
     TransformerAggregator,
     Transformer2DAggregator
 )
+from .multimodal import MultiModalModel, PolicyEncoder, get_fusion_layer
 
 __all__ = [
     'MLPModel',
@@ -23,5 +24,8 @@ __all__ = [
     'PositionalAttentionAggregator',
     'SpatialPositionAggregator',
     'TransformerAggregator',
-    'Transformer2DAggregator'
+    'Transformer2DAggregator',
+    'MultiModalModel',
+    'PolicyEncoder',
+    'get_fusion_layer'
 ]

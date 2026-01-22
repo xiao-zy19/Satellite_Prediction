@@ -2,18 +2,25 @@
 
 基于 Alpha Earth 卫星嵌入数据的人口自然增长率预测实验框架。
 
-本项目比较了不同模型架构（MLP、LightCNN、ResNet）和不同预训练策略（无预训练、SimCLR、MAE、ImageNet）对人口增长率预测性能的影响。
+本项目比较了不同模型架构（MLP、LightCNN、ResNet、**Multimodal**）和不同预训练策略（无预训练、SimCLR、MAE、ImageNet）对人口增长率预测性能的影响。
+
+**v3.0 新增**: 多模态（Multimodal）模型支持，融合卫星图像特征与结构化政策特征，实现更精准的人口增长率预测。
 
 ## 项目结构
 
 ```
 Baseline_Pretrain/
-├── config.py                      # 所有配置（路径、模型、训练参数、实验预设）
-├── dataset.py                     # 数据集类和数据加载器
-├── train.py                       # 统一训练脚本
+├── config.py                      # 基础配置（路径、模型、训练参数、实验预设）
+├── config_multimodal.py           # 多模态实验配置 [NEW]
+├── dataset.py                     # 基础数据集类和数据加载器
+├── dataset_policy.py              # 带政策特征的数据集 [NEW]
+├── train.py                       # 基础模型训练脚本
+├── train_multimodal.py            # 多模态模型训练脚本 [NEW]
 ├── evaluate.py                    # 模型评估脚本
 ├── compare_results.py             # 实验结果对比分析
 ├── utils.py                       # 工具函数（指标计算、日志、检查点等）
+├── policy_features.py             # 政策特征提取模块 [NEW]
+├── verify_policy_data.py          # 政策数据验证脚本 [NEW]
 ├── preprocess_patches.py          # 数据预处理：TIFF → 25个patch的npy文件
 ├── preprocess_individual_patches.py  # 数据预处理：TIFF → 25个独立patch文件
 ├── requirements.txt               # 项目依赖
@@ -22,7 +29,8 @@ Baseline_Pretrain/
 │   ├── mlp_model.py               # MLP 模型
 │   ├── light_cnn.py               # 轻量级 CNN 模型
 │   ├── resnet_baseline.py         # ResNet 基线模型
-│   └── aggregators.py             # 位置感知聚合模块
+│   ├── aggregators.py             # 位置感知聚合模块
+│   └── multimodal.py              # 多模态融合模型 [NEW]
 ├── pretrain/
 │   ├── __init__.py
 │   ├── simclr.py                  # SimCLR 对比学习预训练
@@ -34,6 +42,8 @@ Baseline_Pretrain/
 │   ├── run_patch_experiments.sh   # Patch-level 实验
 │   ├── run_patch_level.sh         # Patch-level 单实验
 │   └── start_experiments.sh       # tmux 启动实验
+├── run_mm_simple.sh               # 多模态实验运行脚本 [NEW]
+├── run_mm_tmux.sh                 # 多模态实验 tmux 脚本 [NEW]
 ├── checkpoints/                   # 模型检查点 (gitignore)
 ├── logs/                          # 训练日志 (gitignore)
 ├── results/                       # 实验结果 (*.pkl gitignore)
@@ -100,15 +110,40 @@ python train.py --exp resnet18_imagenet_trimmed_mean --gpu 3
 
 # 位置感知聚合实验
 python train.py --exp light_cnn_transformer_2d --gpu 3
+
+# ============================================
+# 多模态实验（卫星图像 + 政策特征）[NEW]
+# ============================================
+
+# 多模态基线（LightCNN + Concat 融合）
+python train_multimodal.py --exp mm_cnn_concat --gpu 3
+
+# 不同融合策略
+python train_multimodal.py --exp mm_cnn_gated --gpu 3      # 门控融合
+python train_multimodal.py --exp mm_cnn_attention --gpu 3  # 注意力融合
+python train_multimodal.py --exp mm_cnn_film --gpu 3       # FiLM 融合
+
+# 多模态 Patch-level 模式
+python train_multimodal.py --exp mm_cnn_concat_patch --gpu 3
+
+# ResNet + 多模态
+python train_multimodal.py --exp mm_resnet18_concat --gpu 3
 ```
 
-### 4. 评估模型
+### 4. 验证政策数据（可选）
+
+```bash
+# 验证政策数据完整性和正确性
+python verify_policy_data.py
+```
+
+### 6. 评估模型
 
 ```bash
 python evaluate.py --exp mae_cnn --gpu 0 --split test
 ```
 
-### 5. 对比所有实验结果
+### 7. 对比所有实验结果
 
 ```bash
 python compare_results.py
@@ -124,6 +159,7 @@ python compare_results.py
 |---------|------|------|
 | 卫星嵌入 | `data_local/city_satellite_tiles/` | Alpha Earth 64维嵌入，1000×1000像素 TIFF |
 | 人口数据 | `人口数据/人口自然增长率_2018-2024_filtered-empty.xlsx` | 2018-2024年各城市人口自然增长率 |
+| 政策数据 | `data_local/Fertility_Policy/fertility_policies_by_province_year.jsonl` | 2013-2024年各省份生育政策特征 [NEW] |
 
 ### 数据规格
 
@@ -143,6 +179,27 @@ python compare_results.py
 | 独立 NPY | `city_individual_patches/` | (64, 200, 200) × 25 | int8 | Patch-level 训练 |
 
 > **注意**: 预处理脚本保持 int8 格式存储，相比 float32 节省 4 倍存储空间。加载时自动转换为 float32 并归一化。
+
+### 政策特征 [NEW]
+
+多模态模型使用 12 维结构化政策特征：
+
+| 特征名称 | 类型 | 范围 | 说明 |
+|---------|------|------|------|
+| `maternity_leave_days` | 连续 | [98, 365] | 产假天数 |
+| `paternity_leave_days` | 连续 | [0, 30] | 陪产假天数 |
+| `parental_leave_days` | 连续 | [0, 20] | 育儿假天数/年 |
+| `marriage_leave_days` | 连续 | [3, 30] | 婚假天数 |
+| `birth_subsidy_amount` | 连续 | [0, 10] | 生育补贴（万元/年） |
+| `housing_subsidy_amount` | 连续 | [0, 100] | 住房补贴（万元） |
+| `childcare_subsidy_monthly` | 连续 | [0, 2000] | 托育补贴（元/月） |
+| `tax_deduction_monthly` | 连续 | [0, 2000] | 个税抵扣（元/月） |
+| `has_childcare_policy` | 二值 | {0, 1} | 是否有托育政策 |
+| `has_ivf_insurance` | 二值 | {0, 1} | 辅助生殖是否纳入医保 |
+| `is_minority_favorable` | 二值 | {0, 1} | 是否为少数民族优惠地区 |
+| `policy_phase` | 离散 | [0, 3] | 政策阶段（0=单独二孩, 1=全面二孩, 2=三孩, 3=生育友好） |
+
+**时间滞后机制**: 为防止数据泄露，预测第 Y 年的人口增长率时，使用第 Y-1 年的政策特征（默认 lag=1）。
 
 ---
 
@@ -184,11 +241,34 @@ python compare_results.py
 
 **适用实验**: `mlp_patch_level`, `light_cnn_patch_level`, `resnet*_patch_level`, `simclr_cnn_patch_level`, `mae_cnn_patch_level`
 
+### 多模态训练 [NEW]
+
+多模态模型融合卫星图像特征和结构化政策特征，支持 4 种融合策略：
+
+```
+训练: 输入 image(batch, 25, 64, 200, 200) + policy(batch, 12)
+      → 图像编码器 → 聚合 → 融合层 → 回归头 → 输出 (batch, 1)
+```
+
+**融合策略**:
+| 策略 | 说明 | 参数量增加 |
+|------|------|-----------|
+| `concat` | 简单拼接后映射 | ~5K |
+| `gated` | 门控融合，学习混合权重 | ~10K |
+| `attention` | 跨模态注意力融合 | ~15K |
+| `film` | Feature-wise Linear Modulation，政策调制图像特征 | ~8K |
+
+**训练脚本**: `train_multimodal.py`
+
+**适用实验**: `mm_cnn_*`, `mm_mlp_*`, `mm_resnet*_*`
+
 ---
 
 ## 实验总览
 
-当前共有 **80 个实验配置**，按模型类型组织如下：
+当前共有 **111 个实验配置**（基础模型 80 + 多模态 31），按模型类型组织如下：
+
+### 基础模型实验（80 个）
 
 | 模型 | 无预训练 | SimCLR | MAE | ImageNet | 总计 |
 |------|---------|--------|-----|----------|------|
@@ -201,9 +281,21 @@ python compare_results.py
 | ResNet101 | 4 | - | - | 4 | 8 |
 | **总计** | **43** | **12** | **9** | **16** | **80** |
 
+### 多模态实验（31 个）[NEW]
+
+| 图像编码器 | Concat | Gated | Attention | FiLM | Patch-level | 总计 |
+|-----------|--------|-------|-----------|------|-------------|------|
+| LightCNN | 3 | 2 | 2 | 2 | 3 | 12 |
+| MLP | 2 | 1 | - | - | - | 3 |
+| ResNet18 | 1 | 1 | - | 1 | 1 | 4 |
+| ResNet34 (pretrained) | 1 | - | - | - | - | 1 |
+| 自定义 LightCNN | 1 | - | - | - | - | 1 |
+| **总计** | **8** | **4** | **2** | **3** | **4** | **31** |
+
 > **评估说明**：
 > - **City-level**：训练和评估使用相同的模型内置聚合方式（mean/median/trimmed_mean 或高级聚合）
 > - **Patch-level**：评估时自动测试 3 种聚合方式（mean/median/trimmed_mean）
+> - **多模态**：融合图像特征和政策特征，支持 4 种融合策略
 
 ---
 
@@ -343,6 +435,55 @@ python compare_results.py
 
 > **注意**：ResNet50/101 使用 Bottleneck blocks，特征维度为 2048（其他为 512）
 
+### 4. 多模态系列（31个）[NEW]
+
+#### City-level 多模态实验（27个）
+
+**LightCNN + 不同融合策略**
+| # | 实验名称 | 融合策略 | 聚合方式 | 说明 |
+|---|----------|----------|----------|------|
+| 81 | mm_cnn_concat | concat | mean | 基线融合 |
+| 82 | mm_cnn_concat_median | concat | median | |
+| 83 | mm_cnn_concat_trimmed | concat | trimmed_mean | |
+| 84 | mm_cnn_gated | gated | mean | 门控融合 |
+| 85 | mm_cnn_gated_trimmed | gated | trimmed_mean | |
+| 86 | mm_cnn_attention | attention | mean | 注意力融合 |
+| 87 | mm_cnn_attention_trimmed | attention | trimmed_mean | |
+| 88 | mm_cnn_film | film | mean | FiLM 融合 |
+| 89 | mm_cnn_film_trimmed | film | trimmed_mean | |
+
+**MLP + 融合**
+| # | 实验名称 | 融合策略 | 聚合方式 |
+|---|----------|----------|----------|
+| 90 | mm_mlp_concat | concat | mean |
+| 91 | mm_mlp_gated | gated | mean |
+
+**ResNet + 融合**
+| # | 实验名称 | 融合策略 | 聚合方式 |
+|---|----------|----------|----------|
+| 92 | mm_resnet18_concat | concat | mean |
+| 93 | mm_resnet18_gated | gated | mean |
+| 94 | mm_resnet18_film | film | mean |
+| 95 | mm_resnet34_pretrained | concat | mean |
+
+**自定义 LightCNN**
+| # | 实验名称 | 融合策略 | 说明 |
+|---|----------|----------|------|
+| 96 | mm_cnn_small_concat | concat | channels=[16,32,64] |
+
+#### Patch-level 多模态实验（4个）
+| # | 实验名称 | 图像编码器 | 融合策略 |
+|---|----------|-----------|----------|
+| 97 | mm_cnn_concat_patch | LightCNN | concat |
+| 98 | mm_cnn_gated_patch | LightCNN | gated |
+| 99 | mm_cnn_film_patch | LightCNN | film |
+| 100 | mm_resnet18_concat_patch | ResNet18 | concat |
+
+> **多模态特点**：
+> - 政策特征维度：12 维（默认不编码，直接使用原始特征）
+> - 图像特征维度：64 维（投影后）
+> - 使用时间滞后（lag=1）防止数据泄露
+
 ---
 
 ## 模型架构
@@ -402,6 +543,38 @@ python compare_results.py
 | `spatial_attention` | 高级 | 2D | ~220K | 2D 行列位置编码 + 注意力 |
 | `transformer` | 高级 | 1D | ~400K | [CLS] Token + Transformer |
 | `transformer_2d` | 高级 | 2D | ~414K | 2D 位置 + [CLS] + Transformer |
+
+### Multimodal Model (`models/multimodal.py`) [NEW]
+
+```
+输入 image patches (batch, 25, 64, 200, 200) + policy features (batch, 12)
+    ↓
+图像编码器 (LightCNN/MLP/ResNet)
+    ↓ encoder_dim (128)
+聚合层 (mean/median/trimmed_mean/attention/...)
+    ↓ 图像特征 (batch, 128)
+    ↓ 投影 → (batch, 64)
+    ↓
+融合层 (concat/gated/attention/film)
+    ├── image_feat (batch, 64)
+    └── policy_feat (batch, 12)
+    ↓ 融合特征 (batch, 64)
+    ↓
+回归头: 64 → 32 → 1
+    ↓
+输出 (batch, 1)
+```
+
+**融合策略详解**:
+
+| 融合类型 | 实现方式 | 数学表达 |
+|---------|---------|---------|
+| `concat` | 拼接后 MLP | `f = MLP([img; policy])` |
+| `gated` | 门控混合 | `f = σ(gate) * img + (1-σ(gate)) * policy` |
+| `attention` | 跨模态自注意力 | `f = mean(MultiHeadAttn([img, policy]))` |
+| `film` | 特征调制 | `f = γ(policy) * img + β(policy)` |
+
+**参数量**: ~180K（LightCNN + concat 融合）
 
 ---
 
@@ -693,6 +866,53 @@ wandb>=0.15.0
 ---
 
 ## 更新日志
+
+### v3.0 (2026-01-23) [NEW]
+
+**重大更新：多模态（Multimodal）模型支持**
+
+#### 新增模块
+- **`models/multimodal.py`**: 多模态融合模型
+  - 支持 4 种融合策略：concat, gated, attention, film
+  - 支持 3 种图像编码器：LightCNN, MLP, ResNet
+  - 支持 City-level 和 Patch-level 两种训练模式
+- **`policy_features.py`**: 政策特征提取模块
+  - 12 维结构化政策特征
+  - 城市-省份映射（覆盖 31 省份）
+  - 时间滞后机制（lag=1）防止数据泄露
+  - 特征归一化支持
+- **`dataset_policy.py`**: 带政策特征的数据集类
+  - `CityPolicyDataset`: City-level 数据集
+  - `PatchPolicyDataset`: Patch-level 数据集
+  - 数据增强支持（翻转、旋转）
+- **`config_multimodal.py`**: 多模态实验配置
+  - 31 个预设实验配置
+  - 灵活的模型配置选项
+- **`train_multimodal.py`**: 多模态模型训练脚本
+  - Wandb 集成
+  - 早停机制
+  - 多聚合策略评估
+- **`verify_policy_data.py`**: 政策数据验证脚本
+  - 6 步验证流程
+  - 数据完整性检查
+
+#### 政策特征说明
+| 特征 | 类型 | 说明 |
+|------|------|------|
+| 假期类 | 4维 | 产假/陪产假/育儿假/婚假天数 |
+| 补贴类 | 4维 | 生育/住房/托育/个税补贴 |
+| 政策类 | 3维 | 托育政策/辅助生殖医保/少数民族优惠 |
+| 阶段类 | 1维 | 政策阶段（0-3） |
+
+#### 实验配置
+- **新增实验**: 31 个多模态实验配置
+- **实验总数**: 80 → 111
+
+#### 运行脚本
+- `run_mm_simple.sh`: 多模态实验简易运行脚本
+- `run_mm_tmux.sh`: 多模态实验 tmux 管理脚本
+
+---
 
 ### v2.5 (2026-01-02)
 
