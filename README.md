@@ -36,14 +36,21 @@ Baseline_Pretrain/
 │   ├── simclr.py                  # SimCLR 对比学习预训练
 │   └── mae.py                     # MAE 掩码自编码器预训练
 ├── scripts/                       # 实验运行脚本
-│   ├── run_all_experiments.sh     # 串行运行所有实验
-│   ├── run_all_experiments_parallel.sh  # 并行运行实验
-│   ├── run_experiments.sh         # 灵活实验脚本
-│   ├── run_patch_experiments.sh   # Patch-level 实验
-│   ├── run_patch_level.sh         # Patch-level 单实验
-│   └── start_experiments.sh       # tmux 启动实验
-├── run_mm_simple.sh               # 多模态实验运行脚本 [NEW]
-├── run_mm_tmux.sh                 # 多模态实验 tmux 脚本 [NEW]
+│   ├── baseline/                  # 基础模型实验脚本
+│   │   ├── run_all_experiments.sh       # 串行运行所有实验
+│   │   ├── run_all_experiments_parallel.sh  # 并行运行实验
+│   │   ├── run_experiments.sh           # 灵活实验脚本
+│   │   └── run_simple.sh                # 简易批量运行脚本
+│   ├── patch_level/               # Patch-level 实验脚本
+│   │   ├── run_patch_experiments.sh     # Patch-level 批量实验
+│   │   └── run_patch_level.sh           # Patch-level 单实验
+│   ├── multimodal/                # 多模态实验脚本 [NEW]
+│   │   ├── run_mm_simple.sh             # 多模态简易运行脚本
+│   │   ├── run_mm_tmux.sh               # 多模态 tmux 管理脚本
+│   │   ├── run_multimodal_experiments.sh  # 多模态批量实验
+│   │   └── run_multimodal_queue.sh      # 多模态队列运行
+│   └── utils/                     # 工具脚本
+│       └── start_experiments.sh         # tmux 启动实验
 ├── checkpoints/                   # 模型检查点 (gitignore)
 ├── logs/                          # 训练日志 (gitignore)
 ├── results/                       # 实验结果 (*.pkl gitignore)
@@ -660,7 +667,7 @@ python train.py --exp mlp_baseline --gpu 3 --seed 123  # -> results/mlp_baseline
 python train.py --exp mlp_baseline --gpu 3 --seed 456  # -> results/mlp_baseline_seed456_results.pkl
 
 # 或使用批量脚本
-bash scripts/run_simple.sh --exp mlp_baseline --seeds 42,123,456
+bash scripts/baseline/run_simple.sh --exp mlp_baseline --seeds 42,123,456
 ```
 
 **输出文件命名规则**：
@@ -740,12 +747,23 @@ python train.py --exp <experiment_name> --gpu <gpu_id> [--seed <random_seed>]
 | 42 (默认) | `checkpoints/{exp}/` | `results/{exp}_results.pkl` | `logs/{exp}_{timestamp}.log` |
 | 其他 | `checkpoints/{exp}_seed{seed}/` | `results/{exp}_seed{seed}_results.pkl` | `logs/{exp}_seed{seed}_{timestamp}.log` |
 
-### 批量运行脚本 (`scripts/run_simple.sh`)
+### 批量运行脚本
+
+脚本按类别组织在 `scripts/` 子目录中：
+
+| 目录 | 说明 |
+|------|------|
+| `scripts/baseline/` | 基础模型实验脚本 |
+| `scripts/patch_level/` | Patch-level 实验脚本 |
+| `scripts/multimodal/` | 多模态实验脚本 |
+| `scripts/utils/` | 工具脚本 |
+
+#### 基础模型批量运行 (`scripts/baseline/run_simple.sh`)
 
 使用 tmux 管理的并行实验运行脚本，支持多 GPU 并行和多种子运行。
 
 ```bash
-cd scripts
+cd scripts/baseline
 
 # 查看帮助
 bash run_simple.sh --help
@@ -786,6 +804,23 @@ bash run_simple.sh --category baseline --seeds 42,123,456 --dry-run
 #   3. mlp_baseline (seed=456)
 #   4. mlp_median (seed=42)
 #   ...
+```
+
+#### 多模态批量运行 (`scripts/multimodal/run_mm_simple.sh`)
+
+```bash
+cd scripts/multimodal
+
+# 查看帮助
+bash run_mm_simple.sh --help
+
+# 运行所有多模态实验
+bash run_mm_simple.sh --category all --gpus 0,1,2,3
+
+# 运行特定融合策略
+bash run_mm_simple.sh --category concat
+bash run_mm_simple.sh --category gated
+bash run_mm_simple.sh --category attention
 ```
 
 **可用实验类别**:
@@ -908,9 +943,15 @@ wandb>=0.15.0
 - **新增实验**: 31 个多模态实验配置
 - **实验总数**: 80 → 111
 
-#### 运行脚本
-- `run_mm_simple.sh`: 多模态实验简易运行脚本
-- `run_mm_tmux.sh`: 多模态实验 tmux 管理脚本
+#### 运行脚本（重新组织目录结构）
+- `scripts/multimodal/`: 多模态实验脚本
+  - `run_mm_simple.sh`: 多模态实验简易运行脚本
+  - `run_mm_tmux.sh`: 多模态实验 tmux 管理脚本
+  - `run_multimodal_experiments.sh`: 多模态批量实验脚本
+  - `run_multimodal_queue.sh`: 多模态队列运行脚本
+- `scripts/baseline/`: 基础模型实验脚本
+- `scripts/patch_level/`: Patch-level 实验脚本
+- `scripts/utils/`: 工具脚本
 
 ---
 
@@ -925,7 +966,7 @@ wandb>=0.15.0
 - **run_id 机制**: 引入 `run_id` 标识符，统一管理 checkpoint、results、logs、wandb
 - **统计显著性**: 支持多种子运行，便于计算均值和标准差
 
-#### 批量运行脚本完善 (`scripts/run_simple.sh`)
+#### 批量运行脚本完善 (`scripts/baseline/run_simple.sh`)
 - **实验配置更新**: 与 `config.py` 完全同步，共 80 个实验
 - **多种子支持**: 新增 `--seed` 和 `--seeds` 参数
   - `--seed 123`: 使用指定种子运行
@@ -939,7 +980,7 @@ wandb>=0.15.0
   - `Trainer` 类新增 `run_id` 参数
   - `init_wandb()` 支持 seed 和 run_id 参数
   - 结果/checkpoint 保存路径使用 run_id
-- `scripts/run_simple.sh`:
+- `scripts/baseline/run_simple.sh`:
   - 实验列表与 config.py 同步
   - 支持 `--seed` 和 `--seeds` 参数
   - Resume 逻辑适配新的文件命名
