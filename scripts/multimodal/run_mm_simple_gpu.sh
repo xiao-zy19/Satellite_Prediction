@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================================
-# Multimodal 实验运行脚本 - tmux窗口管理版
-# 模仿 scripts/run_simple.sh 逻辑，适配 train_multimodal.py
+# Multimodal 实验运行脚本 - tmux窗口管理版 (GPU归一化版本)
+# 基于 run_mm_simple.sh，添加 --normalize_on_gpu 参数以提升训练速度
 # ============================================================================
 
 set -e
@@ -11,7 +11,7 @@ PROJECT_DIR="/share_data/data101/xiaozhenyu/degree_essay/Alpha_Earth/AEF_Data/Ba
 LOG_DIR="${PROJECT_DIR}/logs/multimodal_runs"
 RESULT_DIR="${PROJECT_DIR}/results/multimodal_runs"
 STATUS_DIR="${PROJECT_DIR}/.run_status_mm"
-SESSION_NAME="mm_exp"
+SESSION_NAME="mm_exp_gpu"
 
 # Conda 环境
 CONDA_BASE="/share_data/data101/xiaozhenyu/anaconda3"
@@ -79,6 +79,8 @@ DEFAULT_SEEDS=(42 123 456)
 # ============================================================================
 show_help() {
     echo "用法: bash $0 [选项]"
+    echo ""
+    echo "** GPU归一化版本: 使用 --normalize_on_gpu 加速训练 **"
     echo ""
     echo "选项:"
     echo "  --help, -h        显示帮助"
@@ -196,16 +198,16 @@ if [ "$RESUME" = true ]; then
     for task in "${TASK_LIST[@]}"; do
         exp="${task%%:*}"
         seed="${task##*:}"
-        
+
         # 构建 run_id
         if [ "$seed" == "42" ]; then
             run_id="${exp}"
         else
             run_id="${exp}_seed${seed}"
         fi
-        
+
         result_file="${RESULT_DIR}/${run_id}_results.pkl"
-        
+
         if [ -f "$result_file" ]; then
             echo "[跳过] $exp (seed=$seed, 已有结果)"
         else
@@ -220,7 +222,7 @@ NUM_EXPS=${#SELECTED_EXPS[@]}
 NUM_SEEDS=${#SEEDS[@]}
 
 echo "=============================================="
-echo "  Multimodal Experiment Runner"
+echo "  Multimodal Experiment Runner (GPU Normalize)"
 echo "=============================================="
 echo "GPU列表: ${GPUS[*]}"
 echo "并行数: $PARALLEL_COUNT"
@@ -229,6 +231,8 @@ echo "种子列表: ${SEEDS[*]}"
 echo "总任务数: $TOTAL (${NUM_EXPS}个实验 x ${NUM_SEEDS}个种子)"
 echo "类别: $CATEGORY"
 echo "结果目录: $RESULT_DIR"
+echo ""
+echo "** 使用 --normalize_on_gpu 加速训练 **"
 echo "=============================================="
 echo ""
 
@@ -243,7 +247,7 @@ if [ "$DRY_RUN" = true ]; then
         task="${TASK_LIST[$i]}"
         exp="${task%%:*}"
         seed="${task##*:}"
-        echo "  $((i+1)). $exp (seed=$seed)"
+        echo "  $((i+1)). $exp (seed=$seed) [--normalize_on_gpu]"
     done
     exit 0
 fi
@@ -297,7 +301,7 @@ tmux new-session -d -s "$SESSION_NAME" -n "monitor"
 
 # monitor窗口
 tmux send-keys -t "$SESSION_NAME:monitor" "cd $PROJECT_DIR" Enter
-tmux send-keys -t "$SESSION_NAME:monitor" "echo '=== Multimodal 实验监控 ==='" Enter
+tmux send-keys -t "$SESSION_NAME:monitor" "echo '=== Multimodal 实验监控 (GPU Normalize) ==='" Enter
 tmux send-keys -t "$SESSION_NAME:monitor" "echo '总实验数: $TOTAL | 并行数: $PARALLEL_COUNT'" Enter
 tmux send-keys -t "$SESSION_NAME:monitor" "echo 'Ctrl+B w 查看窗口 | Ctrl+B d 脱离'" Enter
 tmux send-keys -t "$SESSION_NAME:monitor" "echo ''" Enter
@@ -314,7 +318,7 @@ start_experiment() {
     # 任务ID
     local task_id="${exp}_seed${seed}"
     local log_file="${LOG_DIR}/${task_id}.log"
-    
+
     # 构建 run_id (与 train_multimodal.py 逻辑一致用于文件名，但这里log用全名)
     if [ "$seed" == "42" ]; then
         run_id="${exp}"
@@ -325,7 +329,7 @@ start_experiment() {
     # tmux窗口名
     local window_name="${exp}_s${seed}"
 
-    echo "[$(date '+%H:%M:%S')] 启动: $exp (seed=$seed) -> GPU $gpu"
+    echo "[$(date '+%H:%M:%S')] 启动: $exp (seed=$seed) -> GPU $gpu [--normalize_on_gpu]"
 
     # 锁定GPU
     lock_gpu "$gpu" "$task_id"
@@ -338,12 +342,12 @@ start_experiment() {
     # 直接设置 PATH 激活环境 (绕过 conda 的旧路径问题)
     tmux send-keys -t "$SESSION_NAME:$window_name" "export PATH=${CONDA_BASE}/envs/${CONDA_ENV}/bin:\$PATH && echo '环境已激活: '${CONDA_ENV}" Enter
     tmux send-keys -t "$SESSION_NAME:$window_name" "export CUDA_VISIBLE_DEVICES=$gpu" Enter
-    tmux send-keys -t "$SESSION_NAME:$window_name" "echo '=== 实验: $exp | GPU: $gpu | Seed: $seed ==='" Enter
+    tmux send-keys -t "$SESSION_NAME:$window_name" "echo '=== 实验: $exp | GPU: $gpu | Seed: $seed | GPU Normalize: ON ==='" Enter
     tmux send-keys -t "$SESSION_NAME:$window_name" "echo '开始时间:' \$(date)" Enter
     tmux send-keys -t "$SESSION_NAME:$window_name" "echo ''" Enter
 
-    # 运行实验 (使用 train_multimodal.py)
-    local cmd="python train_multimodal.py --exp $exp --gpu $gpu --seed $seed 2>&1 | tee $log_file"
+    # 运行实验 (使用 train_multimodal.py，添加 --normalize_on_gpu)
+    local cmd="python train_multimodal.py --exp $exp --gpu $gpu --seed $seed --normalize_on_gpu 2>&1 | tee $log_file"
     cmd="$cmd; if [ \$? -eq 0 ]; then echo success > ${STATUS_DIR}/exp_${task_id}.status; else echo failed > ${STATUS_DIR}/exp_${task_id}.status; fi"
     cmd="$cmd; rm -f ${STATUS_DIR}/gpu_${gpu}.lock"
     cmd="$cmd; echo ''; echo '=== 实验结束 ==='; echo '结束时间:' \$(date)"
@@ -416,7 +420,7 @@ done
 # ============================================================================
 echo ""
 echo "=============================================="
-echo "  所有实验已完成!"
+echo "  所有实验已完成! (GPU Normalize版本)"
 echo "=============================================="
 
 SUCCESS=0
@@ -427,7 +431,7 @@ for task in "${TASK_LIST[@]}"; do
     exp="${task%%:*}"
     seed="${task##*:}"
     task_id="${exp}_seed${seed}"
-    
+
     status_file="${STATUS_DIR}/exp_${task_id}.status"
     if [ -f "$status_file" ]; then
         status=$(cat "$status_file")

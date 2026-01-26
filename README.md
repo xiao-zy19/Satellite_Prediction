@@ -13,14 +13,15 @@ Baseline_Pretrain/
 ├── config.py                      # 基础配置（路径、模型、训练参数、实验预设）
 ├── config_multimodal.py           # 多模态实验配置 [NEW]
 ├── dataset.py                     # 基础数据集类和数据加载器
-├── dataset_policy.py              # 带政策特征的数据集 [NEW]
+├── dataset_policy.py              # 带政策特征的数据集（支持GPU归一化）[NEW]
 ├── train.py                       # 基础模型训练脚本
-├── train_multimodal.py            # 多模态模型训练脚本 [NEW]
+├── train_multimodal.py            # 多模态模型训练脚本（支持GPU归一化）[NEW]
 ├── evaluate.py                    # 模型评估脚本
 ├── compare_results.py             # 实验结果对比分析
 ├── utils.py                       # 工具函数（指标计算、日志、检查点等）
 ├── policy_features.py             # 政策特征提取模块 [NEW]
 ├── verify_policy_data.py          # 政策数据验证脚本 [NEW]
+├── verify_gpu_normalization.py    # GPU归一化验证脚本 [NEW]
 ├── preprocess_patches.py          # 数据预处理：TIFF → 25个patch的npy文件
 ├── preprocess_individual_patches.py  # 数据预处理：TIFF → 25个独立patch文件
 ├── requirements.txt               # 项目依赖
@@ -45,7 +46,8 @@ Baseline_Pretrain/
 │   │   ├── run_patch_experiments.sh     # Patch-level 批量实验
 │   │   └── run_patch_level.sh           # Patch-level 单实验
 │   ├── multimodal/                # 多模态实验脚本 [NEW]
-│   │   ├── run_mm_simple.sh             # 多模态简易运行脚本
+│   │   ├── run_mm_simple.sh             # 多模态 tmux 管理脚本（重构）
+│   │   ├── run_mm_simple_gpu.sh         # 多模态 GPU 归一化版本 [NEW]
 │   │   ├── run_mm_tmux.sh               # 多模态 tmux 管理脚本
 │   │   ├── run_multimodal_experiments.sh  # 多模态批量实验
 │   │   └── run_multimodal_queue.sh      # 多模态队列运行
@@ -135,6 +137,9 @@ python train_multimodal.py --exp mm_cnn_concat_patch --gpu 3
 
 # ResNet + 多模态
 python train_multimodal.py --exp mm_resnet18_concat --gpu 3
+
+# 启用 GPU 归一化加速训练 [NEW]
+python train_multimodal.py --exp mm_cnn_concat --gpu 3 --normalize_on_gpu
 ```
 
 ### 4. 验证政策数据（可选）
@@ -806,24 +811,7 @@ bash run_simple.sh --category baseline --seeds 42,123,456 --dry-run
 #   ...
 ```
 
-#### 多模态批量运行 (`scripts/multimodal/run_mm_simple.sh`)
-
-```bash
-cd scripts/multimodal
-
-# 查看帮助
-bash run_mm_simple.sh --help
-
-# 运行所有多模态实验
-bash run_mm_simple.sh --category all --gpus 0,1,2,3
-
-# 运行特定融合策略
-bash run_mm_simple.sh --category concat
-bash run_mm_simple.sh --category gated
-bash run_mm_simple.sh --category attention
-```
-
-**可用实验类别**:
+**基础模型可用实验类别**:
 
 | 类别 | 说明 | 实验数量 |
 |------|------|---------|
@@ -834,6 +822,53 @@ bash run_mm_simple.sh --category attention
 | `resnet` | 所有 ResNet 实验 | 40 |
 | `resnet10/18/34/50/101` | 特定 ResNet 版本 | 4-13 |
 | `agg` | Position-Aware 聚合 | 25 |
+
+#### 多模态批量运行 (`scripts/multimodal/run_mm_simple.sh`)
+
+```bash
+cd scripts/multimodal
+
+# 查看帮助
+bash run_mm_simple.sh --help
+
+# 列出所有实验
+bash run_mm_simple.sh --list
+
+# 运行所有多模态实验（默认使用 3 个种子：42,123,456）
+bash run_mm_simple.sh --category all --gpus 0,1,2,3
+
+# 运行特定类别
+bash run_mm_simple.sh --category baseline    # 基础实验
+bash run_mm_simple.sh --category fusion      # 融合变体
+bash run_mm_simple.sh --category patch       # Patch-level
+
+# 指定单个种子
+bash run_mm_simple.sh --category baseline --seed 42
+
+# 使用多个种子
+bash run_mm_simple.sh --category baseline --seeds 42,123,456
+
+# 断点续跑（跳过已完成实验）
+bash run_mm_simple.sh --category all --resume
+
+# 预览模式
+bash run_mm_simple.sh --category all --dry-run
+
+# GPU 归一化版本（加速训练）
+bash run_mm_simple_gpu.sh --category all --gpus 0,1,2,3
+```
+
+**多模态实验可用类别**:
+
+| 类别 | 说明 | 实验数量 |
+|------|------|---------|
+| `all` | 所有多模态实验 | 20 |
+| `baseline` | LightCNN Concat | 3 |
+| `fusion` | LightCNN 融合变体 | 9 |
+| `models` | 不同架构 (MLP/CNN/ResNet) | 10 |
+| `patch` | Patch-level 训练 | 4 |
+| `mlp` | MLP 模型 | 2 |
+| `resnet` | ResNet 模型 | 4 |
 
 **参数说明**:
 
@@ -902,7 +937,45 @@ wandb>=0.15.0
 
 ## 更新日志
 
-### v3.0 (2026-01-23) [NEW]
+### v3.1 (2026-01-26)
+
+**性能优化：GPU 归一化支持**
+
+#### GPU 归一化功能
+- **新增命令行参数**: `--normalize_on_gpu` 用于在 GPU 上进行图像归一化
+- **性能提升**: 将归一化从 CPU 移至 GPU，减少数据传输开销，提升训练速度
+- **数值等价性**: GPU 归一化与 CPU 归一化结果数值上等价（误差 < 1e-5）
+- **验证脚本**: `verify_gpu_normalization.py` 用于验证 GPU 归一化的正确性和性能
+
+#### 使用方法
+```bash
+# 启用 GPU 归一化
+python train_multimodal.py --exp mm_cnn_concat --gpu 0 --normalize_on_gpu
+
+# 使用 GPU 归一化版本的批量脚本
+bash scripts/multimodal/run_mm_simple_gpu.sh --category baseline --gpus 0,1,2,3
+```
+
+#### 代码修改
+- **`dataset_policy.py`**: `CityPolicyDataset` 和 `PatchLevelPolicyDataset` 新增 `normalize_on_gpu` 参数
+- **`train_multimodal.py`**:
+  - `MultiModalTrainer` 新增 `_gpu_normalize()` 方法
+  - `evaluate_multimodal()` 和 `evaluate_patch_level_multimodal()` 支持 GPU 归一化
+  - 命令行新增 `--normalize_on_gpu` 参数
+- **`scripts/multimodal/run_mm_simple_gpu.sh`**: GPU 归一化版本的批量运行脚本
+- **`verify_gpu_normalization.py`**: GPU 归一化验证脚本
+
+#### 运行脚本重构
+- **`run_mm_simple.sh`**: 完全重写，功能增强
+  - 支持 tmux 窗口管理，多 GPU 并行
+  - 支持多种子运行 (`--seeds 42,123,456`)
+  - 支持实验类别选择 (`--category baseline/fusion/patch/...`)
+  - 支持断点续跑 (`--resume`)
+  - 支持预览模式 (`--dry-run`)
+
+---
+
+### v3.0 (2026-01-23)
 
 **重大更新：多模态（Multimodal）模型支持**
 

@@ -74,7 +74,7 @@ class MultiModalExperimentConfig:
     device: str = "cuda"
     num_workers: int = 8
     wandb_enabled: bool = True
-    wandb_project: str = "population-multimodal"
+    wandb_project: str = "population-multimodal-a100"
 
 
 # =============================================================================

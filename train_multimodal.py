@@ -126,7 +126,8 @@ class MultiModalTrainer:
         use_wandb: bool = False,
         test_loader: DataLoader = None,
         is_patch_level: bool = False,
-        run_id: str = None
+        run_id: str = None,
+        normalize_on_gpu: bool = False
     ):
         self.model = model.to(device)
         self.train_loader = train_loader
@@ -139,6 +140,7 @@ class MultiModalTrainer:
         self.use_wandb = use_wandb
         self.is_patch_level = is_patch_level
         self.run_id = run_id if run_id else exp_config.exp_name
+        self.normalize_on_gpu = normalize_on_gpu
 
         # Loss function
         self.criterion = nn.MSELoss()
@@ -175,6 +177,29 @@ class MultiModalTrainer:
         self.best_epoch = 0
         self.best_model_state = None
 
+    def _gpu_normalize(self, patches: torch.Tensor) -> torch.Tensor:
+        """
+        Perform per-patch per-channel normalization on GPU.
+
+        Args:
+            patches: (batch, 25, 64, 200, 200) for city-level
+                    or (batch, 64, 200, 200) for patch-level
+
+        Returns:
+            Normalized patches with same shape
+        """
+        if patches.dim() == 5:
+            # city-level: (batch, num_patches, channels, H, W)
+            mean = patches.mean(dim=(-2, -1), keepdim=True)
+            std = patches.std(dim=(-2, -1), keepdim=True) + 1e-8
+        elif patches.dim() == 4:
+            # patch-level: (batch, channels, H, W)
+            mean = patches.mean(dim=(-2, -1), keepdim=True)
+            std = patches.std(dim=(-2, -1), keepdim=True) + 1e-8
+        else:
+            raise ValueError(f"Unexpected patches dimension: {patches.dim()}")
+        return (patches - mean) / std
+
     def train_epoch(self, epoch: int):
         """Train for one epoch."""
         self.model.train()
@@ -185,6 +210,8 @@ class MultiModalTrainer:
         pbar = tqdm(self.train_loader, desc=f"Epoch {epoch} [Train]")
         for patches, policy_feat, labels, _ in pbar:
             patches = patches.to(self.device)
+            if self.normalize_on_gpu:
+                patches = self._gpu_normalize(patches)
             policy_feat = policy_feat.to(self.device)
             labels = labels.to(self.device)
 
@@ -218,6 +245,8 @@ class MultiModalTrainer:
         pbar = tqdm(data_loader, desc=desc, leave=False)
         for patches, policy_feat, labels, _ in pbar:
             patches = patches.to(self.device)
+            if self.normalize_on_gpu:
+                patches = self._gpu_normalize(patches)
             policy_feat = policy_feat.to(self.device)
             labels = labels.to(self.device)
 
@@ -269,10 +298,14 @@ class MultiModalTrainer:
 
             if self.is_patch_level:
                 # Patch-level: evaluate with 3 aggregation methods
-                val_results = evaluate_patch_level_multimodal(self.model, self.val_loader, self.device)
+                val_results = evaluate_patch_level_multimodal(
+                    self.model, self.val_loader, self.device, normalize_on_gpu=self.normalize_on_gpu
+                )
                 test_results = None
                 if self.test_loader is not None:
-                    test_results = evaluate_patch_level_multimodal(self.model, self.test_loader, self.device)
+                    test_results = evaluate_patch_level_multimodal(
+                        self.model, self.test_loader, self.device, normalize_on_gpu=self.normalize_on_gpu
+                    )
 
                 # Update history for all 3 methods
                 for agg_method in ['mean', 'median', 'trimmed_mean']:
@@ -415,8 +448,30 @@ class MultiModalTrainer:
         return self.history
 
 
+def _gpu_normalize_standalone(patches: torch.Tensor) -> torch.Tensor:
+    """
+    Standalone GPU normalization function for use in evaluate functions.
+
+    Args:
+        patches: (batch, 25, 64, 200, 200) for city-level
+                or (batch, 64, 200, 200) for patch-level
+
+    Returns:
+        Normalized patches with same shape
+    """
+    if patches.dim() == 5:
+        mean = patches.mean(dim=(-2, -1), keepdim=True)
+        std = patches.std(dim=(-2, -1), keepdim=True) + 1e-8
+    elif patches.dim() == 4:
+        mean = patches.mean(dim=(-2, -1), keepdim=True)
+        std = patches.std(dim=(-2, -1), keepdim=True) + 1e-8
+    else:
+        raise ValueError(f"Unexpected patches dimension: {patches.dim()}")
+    return (patches - mean) / std
+
+
 @torch.no_grad()
-def evaluate_multimodal(model, data_loader, device):
+def evaluate_multimodal(model, data_loader, device, normalize_on_gpu: bool = False):
     """Evaluate multimodal model on a dataset (city-level mode)."""
     model.eval()
     all_labels = []
@@ -425,6 +480,8 @@ def evaluate_multimodal(model, data_loader, device):
 
     for patches, policy_feat, labels, info in tqdm(data_loader, desc="Evaluating"):
         patches = patches.to(device)
+        if normalize_on_gpu:
+            patches = _gpu_normalize_standalone(patches)
         policy_feat = policy_feat.to(device)
         outputs = model(patches, policy_feat)
 
@@ -445,7 +502,7 @@ def evaluate_multimodal(model, data_loader, device):
 
 
 @torch.no_grad()
-def evaluate_patch_level_multimodal(model, data_loader, device, num_patches: int = 25):
+def evaluate_patch_level_multimodal(model, data_loader, device, num_patches: int = 25, normalize_on_gpu: bool = False):
     """Evaluate patch-level multimodal model with THREE aggregation methods."""
     model.eval()
 
@@ -453,6 +510,8 @@ def evaluate_patch_level_multimodal(model, data_loader, device, num_patches: int
 
     for patches, policy_feat, labels, info in tqdm(data_loader, desc="Collecting predictions", leave=False):
         patches = patches.to(device)
+        if normalize_on_gpu:
+            patches = _gpu_normalize_standalone(patches)
         policy_feat = policy_feat.to(device)
         outputs = model(patches, policy_feat)
 
@@ -541,8 +600,15 @@ def evaluate_patch_level_multimodal(model, data_loader, device, num_patches: int
     return results
 
 
-def run_multimodal_experiment(exp_name: str, gpu_id: int = 0, seed: int = config.RANDOM_SEED):
-    """Run a single multimodal experiment."""
+def run_multimodal_experiment(exp_name: str, gpu_id: int = 0, seed: int = config.RANDOM_SEED, normalize_on_gpu: bool = False):
+    """Run a single multimodal experiment.
+
+    Args:
+        exp_name: Name of the experiment configuration
+        gpu_id: GPU device ID to use
+        seed: Random seed for reproducibility
+        normalize_on_gpu: If True, perform normalization on GPU instead of CPU
+    """
     # Set GPU
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
 
@@ -559,11 +625,14 @@ def run_multimodal_experiment(exp_name: str, gpu_id: int = 0, seed: int = config
     # Set seed
     print(f"Setting random seed: {seed}")
     print(f"Run ID: {run_id}")
+    if normalize_on_gpu:
+        print("[GPU Normalization ENABLED]")
     set_seed(seed)
 
     # Setup logging
     logger = setup_logging(run_id)
     logger.info(f"Starting multimodal experiment: {exp_name} (run_id: {run_id}, seed: {seed})")
+    logger.info(f"GPU Normalization: {normalize_on_gpu}")
 
     # Device
     device = get_device(exp_config.device)
@@ -580,7 +649,8 @@ def run_multimodal_experiment(exp_name: str, gpu_id: int = 0, seed: int = config
         train_loader, val_loader, test_loader, dataset_info = get_patch_level_policy_dataloaders(
             batch_size=exp_config.train_config.batch_size,
             num_workers=exp_config.num_workers,
-            seed=seed
+            seed=seed,
+            normalize_on_gpu=normalize_on_gpu
         )
         logger.info(f"Patch-level mode: {dataset_info['num_train_patches']} training patches "
                     f"from {dataset_info['num_train']} city-year samples")
@@ -588,7 +658,8 @@ def run_multimodal_experiment(exp_name: str, gpu_id: int = 0, seed: int = config
         train_loader, val_loader, test_loader, dataset_info = get_policy_dataloaders(
             batch_size=exp_config.train_config.batch_size,
             num_workers=exp_config.num_workers,
-            seed=seed
+            seed=seed,
+            normalize_on_gpu=normalize_on_gpu
         )
 
     # Init wandb
@@ -613,7 +684,8 @@ def run_multimodal_experiment(exp_name: str, gpu_id: int = 0, seed: int = config
         use_wandb=use_wandb,
         test_loader=test_loader,
         is_patch_level=is_patch_level,
-        run_id=run_id
+        run_id=run_id,
+        normalize_on_gpu=normalize_on_gpu
     )
 
     # Train
@@ -623,8 +695,8 @@ def run_multimodal_experiment(exp_name: str, gpu_id: int = 0, seed: int = config
     logger.info("\nEvaluating on test set...")
 
     if is_patch_level:
-        val_results = evaluate_patch_level_multimodal(model, val_loader, device)
-        test_results = evaluate_patch_level_multimodal(model, test_loader, device)
+        val_results = evaluate_patch_level_multimodal(model, val_loader, device, normalize_on_gpu=normalize_on_gpu)
+        test_results = evaluate_patch_level_multimodal(model, test_loader, device, normalize_on_gpu=normalize_on_gpu)
 
         print("\n" + "=" * 60)
         print("Final Results (Multimodal Patch-Level with 3 Aggregation Methods)")
@@ -684,8 +756,8 @@ def run_multimodal_experiment(exp_name: str, gpu_id: int = 0, seed: int = config
 
     else:
         # City-level
-        val_y_true, val_y_pred, val_metrics, val_info = evaluate_multimodal(model, val_loader, device)
-        test_y_true, test_y_pred, test_metrics, test_info = evaluate_multimodal(model, test_loader, device)
+        val_y_true, val_y_pred, val_metrics, val_info = evaluate_multimodal(model, val_loader, device, normalize_on_gpu=normalize_on_gpu)
+        test_y_true, test_y_pred, test_metrics, test_info = evaluate_multimodal(model, test_loader, device, normalize_on_gpu=normalize_on_gpu)
 
         print("\n" + "=" * 60)
         print(f"Final Results (Multimodal City-Level, fusion: {exp_config.model_config.fusion_type})")
@@ -744,9 +816,11 @@ def main():
     parser.add_argument('--gpu', type=int, default=0, help="GPU ID to use")
     parser.add_argument('--seed', type=int, default=config.RANDOM_SEED,
                         help=f"Random seed for reproducibility (default: {config.RANDOM_SEED})")
+    parser.add_argument('--normalize_on_gpu', action='store_true',
+                        help="Perform normalization on GPU instead of CPU (improves training speed)")
     args = parser.parse_args()
 
-    run_multimodal_experiment(args.exp, args.gpu, args.seed)
+    run_multimodal_experiment(args.exp, args.gpu, args.seed, normalize_on_gpu=args.normalize_on_gpu)
 
 
 if __name__ == "__main__":

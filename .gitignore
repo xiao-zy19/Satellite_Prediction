@@ -36,3 +36,7 @@ Thumbs.db
 venv/
 env/
 extraction_log.txt
+
+# Runtime status directories
+.run_status/
+.run_status_mm/

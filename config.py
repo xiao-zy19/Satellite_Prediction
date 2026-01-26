@@ -11,7 +11,8 @@ from typing import List, Optional
 # =============================================================================
 # Path Configuration
 # =============================================================================
-BASE_DIR = Path("/home/xiaozhenyu/degree_essay/Alpha_Earth/AEF_Data")
+# BASE_DIR = Path("/home/xiaozhenyu/degree_essay/Alpha_Earth/AEF_Data")
+BASE_DIR = Path("/share_data/data101/xiaozhenyu/degree_essay/Alpha_Earth/AEF_Data")
 DATA_DIR = BASE_DIR / "data_local"  # Local disk for faster I/O (was: "data" on NAS)
 PROJECT_DIR = BASE_DIR / "Baseline_Pretrain"
 
@@ -19,7 +20,8 @@ PROJECT_DIR = BASE_DIR / "Baseline_Pretrain"
 SATELLITE_DIR = DATA_DIR / "city_satellite_tiles"  # Original TIFF files
 PATCHES_DIR = DATA_DIR / "city_patches"  # Preprocessed patches (all 25 patches in one npy)
 INDIVIDUAL_PATCHES_DIR = DATA_DIR / "city_individual_patches"  # Individual patch files
-POPULATION_DATA = Path("/home/xiaozhenyu/degree_essay/Alpha_Earth/人口数据/人口自然增长率_2018-2024_filtered-empty.xlsx")
+# POPULATION_DATA = Path("/home/xiaozhenyu/degree_essay/Alpha_Earth/人口数据/人口自然增长率_2018-2024_filtered-empty.xlsx")
+POPULATION_DATA = Path("/share_data/data101/xiaozhenyu/degree_essay/Alpha_Earth/人口数据/人口自然增长率_2018-2024_filtered-empty.xlsx")
 
 # Use preprocessed patches for faster loading
 USE_PREPROCESSED_PATCHES = True
@@ -163,9 +165,9 @@ class ExperimentConfig:
     pretrain_config: object = None  # SimCLR or MAE config
     use_pretrain: bool = False
     device: str = "cuda"
-    num_workers: int = 8  # Optimal for local disk I/O
+    num_workers: int = 4  # Optimal for local disk I/O
     wandb_enabled: bool = True  # Enabled for experiment tracking
-    wandb_project: str = "population-pretrain-comparison"
+    wandb_project: str = "population-pretrain-comparison-a100"
 
 
 # =============================================================================

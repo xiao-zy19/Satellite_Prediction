@@ -36,7 +36,8 @@ class CityPolicyDataset(Dataset):
         num_patches_per_dim: int = config.NUM_PATCHES_PER_DIM,
         augment: bool = False,
         use_preprocessed: bool = True,
-        normalize_policy: bool = True
+        normalize_policy: bool = True,
+        normalize_on_gpu: bool = False
     ):
         """
         Args:
@@ -46,6 +47,7 @@ class CityPolicyDataset(Dataset):
             augment: Whether to apply data augmentation
             use_preprocessed: Use preprocessed npy files if available
             normalize_policy: Whether to normalize policy features
+            normalize_on_gpu: If True, skip CPU normalization (will be done on GPU during training)
         """
         self.samples = samples
         self.patch_size = patch_size
@@ -53,6 +55,7 @@ class CityPolicyDataset(Dataset):
         self.augment = augment
         self.use_preprocessed = use_preprocessed and config.USE_PREPROCESSED_PATCHES
         self.normalize_policy = normalize_policy
+        self.normalize_on_gpu = normalize_on_gpu
 
         # Initialize policy extractor
         self.policy_extractor = get_policy_extractor()
@@ -84,7 +87,8 @@ class CityPolicyDataset(Dataset):
             patches = self._augment_patches(patches)
 
         patches = torch.FloatTensor(patches)
-        patches = self._normalize_tensor(patches)
+        if not self.normalize_on_gpu:
+            patches = self._normalize_tensor(patches)
 
         # Get policy features
         city = sample['city']
@@ -170,7 +174,8 @@ class PatchLevelPolicyDataset(Dataset):
         num_patches_per_dim: int = config.NUM_PATCHES_PER_DIM,
         augment: bool = False,
         use_preprocessed: bool = True,
-        normalize_policy: bool = True
+        normalize_policy: bool = True,
+        normalize_on_gpu: bool = False
     ):
         self.samples = samples
         self.patch_size = patch_size
@@ -179,6 +184,7 @@ class PatchLevelPolicyDataset(Dataset):
         self.augment = augment
         self.use_preprocessed = use_preprocessed and config.USE_PREPROCESSED_PATCHES
         self.normalize_policy = normalize_policy
+        self.normalize_on_gpu = normalize_on_gpu
 
         # Build index mapping
         self.index_mapping = []
@@ -247,7 +253,8 @@ class PatchLevelPolicyDataset(Dataset):
             patch = self._augment_patch(patch)
 
         patch = torch.FloatTensor(patch)
-        patch = self._normalize_tensor(patch)
+        if not self.normalize_on_gpu:
+            patch = self._normalize_tensor(patch)
 
         # Get policy features
         city = sample['city']
@@ -317,10 +324,18 @@ def get_policy_dataloaders(
     batch_size: int = 16,
     num_workers: int = 4,
     augment_train: bool = True,
-    seed: int = config.RANDOM_SEED
+    seed: int = config.RANDOM_SEED,
+    normalize_on_gpu: bool = False
 ) -> Tuple[DataLoader, DataLoader, DataLoader, Dict]:
     """
     Create train, validation, and test dataloaders with policy features (city-level).
+
+    Args:
+        batch_size: Batch size for dataloaders
+        num_workers: Number of workers for data loading
+        augment_train: Whether to augment training data
+        seed: Random seed for reproducibility
+        normalize_on_gpu: If True, skip CPU normalization (will be done on GPU during training)
 
     Returns:
         train_loader, val_loader, test_loader, dataset_info
@@ -343,10 +358,12 @@ def get_policy_dataloaders(
     print(f"  Train: {len(train_samples)} samples")
     print(f"  Val: {len(val_samples)} samples")
     print(f"  Test: {len(test_samples)} samples")
+    if normalize_on_gpu:
+        print("  [GPU Normalization ENABLED] - CPU normalization will be skipped")
 
-    train_dataset = CityPolicyDataset(train_samples, augment=augment_train)
-    val_dataset = CityPolicyDataset(val_samples, augment=False)
-    test_dataset = CityPolicyDataset(test_samples, augment=False)
+    train_dataset = CityPolicyDataset(train_samples, augment=augment_train, normalize_on_gpu=normalize_on_gpu)
+    val_dataset = CityPolicyDataset(val_samples, augment=False, normalize_on_gpu=normalize_on_gpu)
+    test_dataset = CityPolicyDataset(test_samples, augment=False, normalize_on_gpu=normalize_on_gpu)
 
     g = torch.Generator()
     g.manual_seed(seed)
@@ -391,7 +408,8 @@ def get_policy_dataloaders(
         'val_samples': val_samples,
         'test_samples': test_samples,
         'policy_feature_dim': 12,
-        'seed': seed
+        'seed': seed,
+        'normalize_on_gpu': normalize_on_gpu
     }
 
     return train_loader, val_loader, test_loader, dataset_info
@@ -401,10 +419,18 @@ def get_patch_level_policy_dataloaders(
     batch_size: int = 64,
     num_workers: int = 4,
     augment_train: bool = True,
-    seed: int = config.RANDOM_SEED
+    seed: int = config.RANDOM_SEED,
+    normalize_on_gpu: bool = False
 ) -> Tuple[DataLoader, DataLoader, DataLoader, Dict]:
     """
     Create patch-level dataloaders with policy features.
+
+    Args:
+        batch_size: Batch size for dataloaders
+        num_workers: Number of workers for data loading
+        augment_train: Whether to augment training data
+        seed: Random seed for reproducibility
+        normalize_on_gpu: If True, skip CPU normalization (will be done on GPU during training)
 
     Returns:
         train_loader, val_loader, test_loader, dataset_info
@@ -427,10 +453,12 @@ def get_patch_level_policy_dataloaders(
     print(f"  Train: {len(train_samples)} city-years -> {len(train_samples) * config.NUM_PATCHES_TOTAL} patches")
     print(f"  Val: {len(val_samples)} city-years -> {len(val_samples) * config.NUM_PATCHES_TOTAL} patches")
     print(f"  Test: {len(test_samples)} city-years -> {len(test_samples) * config.NUM_PATCHES_TOTAL} patches")
+    if normalize_on_gpu:
+        print("  [GPU Normalization ENABLED] - CPU normalization will be skipped")
 
-    train_dataset = PatchLevelPolicyDataset(train_samples, augment=augment_train)
-    val_dataset = PatchLevelPolicyDataset(val_samples, augment=False)
-    test_dataset = PatchLevelPolicyDataset(test_samples, augment=False)
+    train_dataset = PatchLevelPolicyDataset(train_samples, augment=augment_train, normalize_on_gpu=normalize_on_gpu)
+    val_dataset = PatchLevelPolicyDataset(val_samples, augment=False, normalize_on_gpu=normalize_on_gpu)
+    test_dataset = PatchLevelPolicyDataset(test_samples, augment=False, normalize_on_gpu=normalize_on_gpu)
 
     g = torch.Generator()
     g.manual_seed(seed)
@@ -480,7 +508,8 @@ def get_patch_level_policy_dataloaders(
         'num_patches_per_city': config.NUM_PATCHES_TOTAL,
         'training_mode': 'patch_level',
         'policy_feature_dim': 12,
-        'seed': seed
+        'seed': seed,
+        'normalize_on_gpu': normalize_on_gpu
     }
 
     return train_loader, val_loader, test_loader, dataset_info
