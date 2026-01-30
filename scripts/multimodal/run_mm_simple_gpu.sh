@@ -9,7 +9,10 @@ set -e
 # 项目配置
 PROJECT_DIR="/share_data/data101/xiaozhenyu/degree_essay/Alpha_Earth/AEF_Data/Baseline_Pretrain"
 LOG_DIR="${PROJECT_DIR}/logs/multimodal_runs"
-RESULT_DIR="${PROJECT_DIR}/results/multimodal_runs"
+# IMPORTANT: Must match config.RESULT_DIR used by train_multimodal.py
+# train_multimodal.py saves to: config.RESULT_DIR/${run_id}_results.pkl
+# which is: ${PROJECT_DIR}/results/${run_id}_results.pkl
+RESULT_DIR="${PROJECT_DIR}/results"
 STATUS_DIR="${PROJECT_DIR}/.run_status_mm"
 SESSION_NAME="mm_exp_gpu"
 
@@ -35,14 +38,36 @@ CNN_FUSION_EXPS=("mm_cnn_gated" "mm_cnn_gated_trimmed" "mm_cnn_attention" "mm_cn
 # --- MLP Models ---
 MLP_EXPS=("mm_mlp_concat" "mm_mlp_gated")
 
-# --- ResNet Models ---
-RESNET_EXPS=("mm_resnet18_concat" "mm_resnet18_gated" "mm_resnet18_film" "mm_resnet34_pretrained")
+# --- ResNet Models (different depths) ---
+RESNET18_EXPS=("mm_resnet18_concat" "mm_resnet18_gated" "mm_resnet18_film")
+RESNET34_EXPS=("mm_resnet34_concat" "mm_resnet34_gated" "mm_resnet34_film" "mm_resnet34_pretrained")
+RESNET50_EXPS=("mm_resnet50_concat" "mm_resnet50_gated" "mm_resnet50_imagenet")
+RESNET101_EXPS=("mm_resnet101_concat" "mm_resnet101_imagenet")
+RESNET10_EXPS=("mm_resnet10_concat" "mm_resnet10_gated")
+RESNET_EXPS=("${RESNET18_EXPS[@]}" "${RESNET34_EXPS[@]}")
 
 # --- Patch-level Experiments ---
 PATCH_EXPS=("mm_cnn_concat_patch" "mm_cnn_gated_patch" "mm_cnn_film_patch" "mm_resnet18_concat_patch")
 
 # --- Custom/Other ---
 CUSTOM_MODEL_EXPS=("mm_cnn_small_concat")
+
+# --- NEW: Position-Aware Aggregation (LightCNN) ---
+CNN_AGG_EXPS=("mm_cnn_concat_attn_agg" "mm_cnn_concat_pos_attn" "mm_cnn_concat_spatial_attn" "mm_cnn_concat_transformer" "mm_cnn_concat_transformer_2d")
+CNN_GATED_AGG_EXPS=("mm_cnn_gated_transformer" "mm_cnn_gated_transformer_2d")
+CNN_FILM_AGG_EXPS=("mm_cnn_film_transformer" "mm_cnn_film_transformer_2d")
+RESNET18_AGG_EXPS=("mm_resnet18_concat_transformer" "mm_resnet18_concat_transformer_2d")
+
+# --- NEW: SimCLR Pretrained ---
+SIMCLR_CNN_EXPS=("mm_simclr_cnn_concat" "mm_simclr_cnn_concat_trimmed" "mm_simclr_cnn_gated" "mm_simclr_cnn_film")
+SIMCLR_CNN_AGG_EXPS=("mm_simclr_cnn_transformer" "mm_simclr_cnn_transformer_2d")
+SIMCLR_MLP_EXPS=("mm_simclr_mlp_concat")
+SIMCLR_PATCH_EXPS=("mm_simclr_cnn_concat_patch")
+
+# --- NEW: MAE Pretrained ---
+MAE_CNN_EXPS=("mm_mae_cnn_concat" "mm_mae_cnn_concat_trimmed" "mm_mae_cnn_gated" "mm_mae_cnn_film")
+MAE_CNN_AGG_EXPS=("mm_mae_cnn_transformer" "mm_mae_cnn_transformer_2d")
+MAE_PATCH_EXPS=("mm_mae_cnn_concat_patch")
 
 # ============================================================================
 # 组合分类
@@ -58,7 +83,22 @@ ALL_FUSION_EXPS=("${CNN_CONCAT_EXPS[@]}" "${CNN_FUSION_EXPS[@]}")
 ALL_MODELS_EXPS=("${CNN_CONCAT_EXPS[@]}" "${MLP_EXPS[@]}" "${RESNET_EXPS[@]}")
 
 # 所有 Patch-level
-ALL_PATCH_EXPS=("${PATCH_EXPS[@]}")
+ALL_PATCH_EXPS=("${PATCH_EXPS[@]}" "${SIMCLR_PATCH_EXPS[@]}" "${MAE_PATCH_EXPS[@]}")
+
+# 所有 ResNet (不同深度)
+ALL_RESNET_EXPS=("${RESNET10_EXPS[@]}" "${RESNET18_EXPS[@]}" "${RESNET34_EXPS[@]}" "${RESNET50_EXPS[@]}" "${RESNET101_EXPS[@]}")
+
+# 所有 Position-Aware Aggregation
+ALL_AGG_EXPS=("${CNN_AGG_EXPS[@]}" "${CNN_GATED_AGG_EXPS[@]}" "${CNN_FILM_AGG_EXPS[@]}" "${RESNET18_AGG_EXPS[@]}")
+
+# 所有 SimCLR 预训练
+ALL_SIMCLR_EXPS=("${SIMCLR_CNN_EXPS[@]}" "${SIMCLR_CNN_AGG_EXPS[@]}" "${SIMCLR_MLP_EXPS[@]}" "${SIMCLR_PATCH_EXPS[@]}")
+
+# 所有 MAE 预训练
+ALL_MAE_EXPS=("${MAE_CNN_EXPS[@]}" "${MAE_CNN_AGG_EXPS[@]}" "${MAE_PATCH_EXPS[@]}")
+
+# 所有自监督预训练 (SimCLR + MAE)
+ALL_SSL_EXPS=("${ALL_SIMCLR_EXPS[@]}" "${ALL_MAE_EXPS[@]}")
 
 # 所有实验
 ALL_EXPERIMENTS=(
@@ -68,6 +108,20 @@ ALL_EXPERIMENTS=(
     "${RESNET_EXPS[@]}"
     "${PATCH_EXPS[@]}"
     "${CUSTOM_MODEL_EXPS[@]}"
+    "${CNN_AGG_EXPS[@]}"
+    "${CNN_GATED_AGG_EXPS[@]}"
+    "${CNN_FILM_AGG_EXPS[@]}"
+    "${RESNET18_AGG_EXPS[@]}"
+    "${SIMCLR_CNN_EXPS[@]}"
+    "${SIMCLR_CNN_AGG_EXPS[@]}"
+    "${SIMCLR_MLP_EXPS[@]}"
+    "${SIMCLR_PATCH_EXPS[@]}"
+    "${MAE_CNN_EXPS[@]}"
+    "${MAE_CNN_AGG_EXPS[@]}"
+    "${MAE_PATCH_EXPS[@]}"
+    "${RESNET10_EXPS[@]}"
+    "${RESNET50_EXPS[@]}"
+    "${RESNET101_EXPS[@]}"
 )
 
 DEFAULT_GPUS=(0 1 2 3 4 5 6 7)
@@ -102,6 +156,11 @@ show_help() {
     echo "  patch             Patch-level 训练 (共 ${#ALL_PATCH_EXPS[@]} 个)"
     echo "  mlp               MLP 模型 (共 ${#MLP_EXPS[@]} 个)"
     echo "  resnet            ResNet 模型 (共 ${#RESNET_EXPS[@]} 个)"
+    echo "  resnet_all        所有 ResNet 深度 (共 ${#ALL_RESNET_EXPS[@]} 个)"
+    echo "  agg               Position-Aware 聚合 (共 ${#ALL_AGG_EXPS[@]} 个)"
+    echo "  simclr            SimCLR 预训练实验 (共 ${#ALL_SIMCLR_EXPS[@]} 个)"
+    echo "  mae               MAE 预训练实验 (共 ${#ALL_MAE_EXPS[@]} 个)"
+    echo "  ssl               所有自监督预训练 (共 ${#ALL_SSL_EXPS[@]} 个)"
 }
 
 list_experiments() {
@@ -116,11 +175,42 @@ list_experiments() {
     echo "=== MLP Models ==="
     for exp in "${MLP_EXPS[@]}"; do echo "  - $exp"; done
     echo ""
-    echo "=== ResNet Models ==="
-    for exp in "${RESNET_EXPS[@]}"; do echo "  - $exp"; done
+    echo "=== ResNet18 Models ==="
+    for exp in "${RESNET18_EXPS[@]}"; do echo "  - $exp"; done
+    echo ""
+    echo "=== ResNet34 Models ==="
+    for exp in "${RESNET34_EXPS[@]}"; do echo "  - $exp"; done
+    echo ""
+    echo "=== ResNet10 Models ==="
+    for exp in "${RESNET10_EXPS[@]}"; do echo "  - $exp"; done
+    echo ""
+    echo "=== ResNet50 Models ==="
+    for exp in "${RESNET50_EXPS[@]}"; do echo "  - $exp"; done
+    echo ""
+    echo "=== ResNet101 Models ==="
+    for exp in "${RESNET101_EXPS[@]}"; do echo "  - $exp"; done
     echo ""
     echo "=== Patch-level Experiments ==="
     for exp in "${PATCH_EXPS[@]}"; do echo "  - $exp"; done
+    echo ""
+    echo "=== Position-Aware Aggregation (LightCNN) ==="
+    for exp in "${CNN_AGG_EXPS[@]}"; do echo "  - $exp"; done
+    for exp in "${CNN_GATED_AGG_EXPS[@]}"; do echo "  - $exp"; done
+    for exp in "${CNN_FILM_AGG_EXPS[@]}"; do echo "  - $exp"; done
+    echo ""
+    echo "=== Position-Aware Aggregation (ResNet18) ==="
+    for exp in "${RESNET18_AGG_EXPS[@]}"; do echo "  - $exp"; done
+    echo ""
+    echo "=== SimCLR Pretrained ==="
+    for exp in "${SIMCLR_CNN_EXPS[@]}"; do echo "  - $exp"; done
+    for exp in "${SIMCLR_CNN_AGG_EXPS[@]}"; do echo "  - $exp"; done
+    for exp in "${SIMCLR_MLP_EXPS[@]}"; do echo "  - $exp"; done
+    for exp in "${SIMCLR_PATCH_EXPS[@]}"; do echo "  - $exp"; done
+    echo ""
+    echo "=== MAE Pretrained ==="
+    for exp in "${MAE_CNN_EXPS[@]}"; do echo "  - $exp"; done
+    for exp in "${MAE_CNN_AGG_EXPS[@]}"; do echo "  - $exp"; done
+    for exp in "${MAE_PATCH_EXPS[@]}"; do echo "  - $exp"; done
     echo ""
     echo "=== Custom/Other ==="
     for exp in "${CUSTOM_MODEL_EXPS[@]}"; do echo "  - $exp"; done
@@ -174,6 +264,11 @@ else
         patch) SELECTED_EXPS=("${ALL_PATCH_EXPS[@]}") ;;
         mlp) SELECTED_EXPS=("${MLP_EXPS[@]}") ;;
         resnet) SELECTED_EXPS=("${RESNET_EXPS[@]}") ;;
+        resnet_all) SELECTED_EXPS=("${ALL_RESNET_EXPS[@]}") ;;
+        agg) SELECTED_EXPS=("${ALL_AGG_EXPS[@]}") ;;
+        simclr) SELECTED_EXPS=("${ALL_SIMCLR_EXPS[@]}") ;;
+        mae) SELECTED_EXPS=("${ALL_MAE_EXPS[@]}") ;;
+        ssl) SELECTED_EXPS=("${ALL_SSL_EXPS[@]}") ;;
         all) SELECTED_EXPS=("${ALL_EXPERIMENTS[@]}") ;;
         *) echo "未知类别: $CATEGORY"; show_help; exit 1 ;;
     esac

@@ -9,6 +9,14 @@ Fusion strategies:
 2. gated: Gated fusion with learnable mixing weights
 3. attention: Cross-attention between modalities
 4. film: Feature-wise Linear Modulation (policy modulates image features)
+
+Aggregation strategies (for city-level mode):
+1. mean, median, trimmed_mean: Basic statistical aggregations
+2. attention: MLP-based attention without position info
+3. pos_attention: Attention with learnable position embeddings
+4. spatial_attention: Attention with 2D spatial position encoding
+5. transformer: Full transformer with [CLS] token aggregation
+6. transformer_2d: Transformer with 2D position encoding
 """
 
 import os
@@ -294,11 +302,15 @@ class MultiModalModel(nn.Module):
                 self.image_encoder = LightCNNEncoder()
             encoder_out_dim = self.image_encoder.output_dim
         elif image_encoder_type == "mlp":
+            # MLP config from model_config (if provided)
+            mlp_hidden_dims = [256, 128, 64]  # Default
+            if model_config is not None:
+                mlp_hidden_dims = getattr(model_config, 'mlp_hidden_dims', None) or [256, 128, 64]
             self.image_encoder = PatchMLP(
                 input_dim=config.NUM_BANDS,
-                hidden_dims=[256, 128, 64]
+                hidden_dims=mlp_hidden_dims
             )
-            encoder_out_dim = 64
+            encoder_out_dim = mlp_hidden_dims[-1]  # Output dim is last hidden dim
         elif image_encoder_type == "resnet":
             # ResNet config from model_config
             resnet_name = "resnet18"
@@ -409,8 +421,10 @@ class MultiModalModel(nn.Module):
             elif self.aggregation_type == "trimmed_mean":
                 aggregated_image = self._trimmed_mean(image_feat)
             elif self.aggregator is not None:
+                # Use advanced aggregator (attention, pos_attention, spatial_attention, transformer, transformer_2d)
                 aggregated_image = self.aggregator(image_feat)
             else:
+                # Fallback to mean
                 aggregated_image = image_feat.mean(dim=1)
 
         # Project image features to image_feature_dim (if needed)

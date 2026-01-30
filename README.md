@@ -4,6 +4,8 @@
 
 本项目比较了不同模型架构（MLP、LightCNN、ResNet、**Multimodal**）和不同预训练策略（无预训练、SimCLR、MAE、ImageNet）对人口增长率预测性能的影响。
 
+**v3.2 新增**: 多模态模型支持自监督预训练（SimCLR/MAE）和位置感知聚合（Transformer），大幅扩展实验配置。
+
 **v3.0 新增**: 多模态（Multimodal）模型支持，融合卫星图像特征与结构化政策特征，实现更精准的人口增长率预测。
 
 ## 项目结构
@@ -138,7 +140,49 @@ python train_multimodal.py --exp mm_cnn_concat_patch --gpu 3
 # ResNet + 多模态
 python train_multimodal.py --exp mm_resnet18_concat --gpu 3
 
-# 启用 GPU 归一化加速训练 [NEW]
+# ============================================
+# 多模态 + 自监督预训练 [NEW v3.2]
+# ============================================
+
+# SimCLR 预训练 + LightCNN + Concat（自动预训练→微调）
+python train_multimodal.py --exp mm_simclr_cnn_concat --gpu 3
+
+# SimCLR 预训练 + Transformer 聚合
+python train_multimodal.py --exp mm_simclr_cnn_transformer --gpu 3
+
+# MAE 预训练 + LightCNN + Gated 融合
+python train_multimodal.py --exp mm_mae_cnn_gated --gpu 3
+
+# SimCLR 预训练 + MLP 编码器
+python train_multimodal.py --exp mm_simclr_mlp_concat --gpu 3
+
+# ============================================
+# 多模态 + 位置感知聚合 [NEW v3.2]
+# ============================================
+
+# LightCNN + Transformer 聚合
+python train_multimodal.py --exp mm_cnn_concat_transformer --gpu 3
+
+# LightCNN + 2D Transformer 聚合
+python train_multimodal.py --exp mm_cnn_concat_transformer_2d --gpu 3
+
+# ResNet18 + Transformer 聚合
+python train_multimodal.py --exp mm_resnet18_concat_transformer --gpu 3
+
+# ============================================
+# 更多 ResNet 深度 [NEW v3.2]
+# ============================================
+
+# ResNet10（最轻量）
+python train_multimodal.py --exp mm_resnet10_concat --gpu 3
+
+# ResNet50 + ImageNet 预训练
+python train_multimodal.py --exp mm_resnet50_imagenet --gpu 3
+
+# ResNet101（最深）
+python train_multimodal.py --exp mm_resnet101_concat --gpu 3
+
+# 启用 GPU 归一化加速训练
 python train_multimodal.py --exp mm_cnn_concat --gpu 3 --normalize_on_gpu
 ```
 
@@ -278,7 +322,7 @@ python compare_results.py
 
 ## 实验总览
 
-当前共有 **111 个实验配置**（基础模型 80 + 多模态 31），按模型类型组织如下：
+当前共有 **约 155 个实验配置**（基础模型 80 + 多模态 ~75），按模型类型组织如下：
 
 ### 基础模型实验（80 个）
 
@@ -293,16 +337,31 @@ python compare_results.py
 | ResNet101 | 4 | - | - | 4 | 8 |
 | **总计** | **43** | **12** | **9** | **16** | **80** |
 
-### 多模态实验（31 个）[NEW]
+### 多模态实验（~75 个）[v3.2 扩展]
 
-| 图像编码器 | Concat | Gated | Attention | FiLM | Patch-level | 总计 |
-|-----------|--------|-------|-----------|------|-------------|------|
-| LightCNN | 3 | 2 | 2 | 2 | 3 | 12 |
-| MLP | 2 | 1 | - | - | - | 3 |
-| ResNet18 | 1 | 1 | - | 1 | 1 | 4 |
-| ResNet34 (pretrained) | 1 | - | - | - | - | 1 |
-| 自定义 LightCNN | 1 | - | - | - | - | 1 |
-| **总计** | **8** | **4** | **2** | **3** | **4** | **31** |
+| 类别 | 描述 | 实验数量 |
+|------|------|---------|
+| **基础多模态** | LightCNN/MLP/ResNet + 4种融合策略 | 21 |
+| **位置感知聚合** | Transformer/2D Transformer 聚合 | 12 |
+| **SimCLR 预训练** | 自监督对比学习 + 多模态微调 | 10 |
+| **MAE 预训练** | 掩码自编码器 + 多模态微调 | 8 |
+| **ResNet 深度扩展** | ResNet10/34/50/101 变体 | 11 |
+| **Patch-level** | 包含预训练的 Patch-level 实验 | 6 |
+| **自定义模型** | 小型 LightCNN 等 | 1 |
+| **总计** | - | **~75** |
+
+#### 详细分类
+
+| 图像编码器 | 无预训练 | SimCLR | MAE | 位置感知聚合 | 总计 |
+|-----------|---------|--------|-----|-------------|------|
+| LightCNN | 12 | 7 | 6 | 9 | 34 |
+| MLP | 2 | 1 | - | - | 3 |
+| ResNet18 | 4 | - | - | 2 | 6 |
+| ResNet10 | 2 | - | - | - | 2 |
+| ResNet34 | 4 | - | - | - | 4 |
+| ResNet50 | 3 | - | - | - | 3 |
+| ResNet101 | 2 | - | - | - | 2 |
+| **总计** | **29** | **8** | **6** | **11** | **~75** |
 
 > **评估说明**：
 > - **City-level**：训练和评估使用相同的模型内置聚合方式（mean/median/trimmed_mean 或高级聚合）
@@ -447,9 +506,9 @@ python compare_results.py
 
 > **注意**：ResNet50/101 使用 Bottleneck blocks，特征维度为 2048（其他为 512）
 
-### 4. 多模态系列（31个）[NEW]
+### 4. 多模态系列（~75个）[v3.2 大幅扩展]
 
-#### City-level 多模态实验（27个）
+#### 4.1 基础多模态实验（City-level）
 
 **LightCNN + 不同融合策略**
 | # | 实验名称 | 融合策略 | 聚合方式 | 说明 |
@@ -470,31 +529,114 @@ python compare_results.py
 | 90 | mm_mlp_concat | concat | mean |
 | 91 | mm_mlp_gated | gated | mean |
 
-**ResNet + 融合**
+**ResNet18 + 融合**
 | # | 实验名称 | 融合策略 | 聚合方式 |
 |---|----------|----------|----------|
 | 92 | mm_resnet18_concat | concat | mean |
 | 93 | mm_resnet18_gated | gated | mean |
 | 94 | mm_resnet18_film | film | mean |
-| 95 | mm_resnet34_pretrained | concat | mean |
 
-**自定义 LightCNN**
-| # | 实验名称 | 融合策略 | 说明 |
-|---|----------|----------|------|
-| 96 | mm_cnn_small_concat | concat | channels=[16,32,64] |
+#### 4.2 位置感知聚合实验 [NEW v3.2]
 
-#### Patch-level 多模态实验（4个）
-| # | 实验名称 | 图像编码器 | 融合策略 |
-|---|----------|-----------|----------|
-| 97 | mm_cnn_concat_patch | LightCNN | concat |
-| 98 | mm_cnn_gated_patch | LightCNN | gated |
-| 99 | mm_cnn_film_patch | LightCNN | film |
-| 100 | mm_resnet18_concat_patch | ResNet18 | concat |
+**LightCNN + Position-Aware Aggregation**
+| # | 实验名称 | 融合策略 | 聚合方式 | 说明 |
+|---|----------|----------|----------|------|
+| 95 | mm_cnn_concat_attn_agg | concat | attention | MLP 注意力聚合 |
+| 96 | mm_cnn_concat_pos_attn | concat | pos_attention | 1D 位置编码 + 注意力 |
+| 97 | mm_cnn_concat_spatial_attn | concat | spatial_attention | 2D 空间位置编码 |
+| 98 | mm_cnn_concat_transformer | concat | transformer | [CLS] + Transformer |
+| 99 | mm_cnn_concat_transformer_2d | concat | transformer_2d | 2D位置 + Transformer |
+| 100 | mm_cnn_gated_transformer | gated | transformer | 门控 + Transformer |
+| 101 | mm_cnn_gated_transformer_2d | gated | transformer_2d | 门控 + 2D Transformer |
+| 102 | mm_cnn_film_transformer | film | transformer | FiLM + Transformer |
+| 103 | mm_cnn_film_transformer_2d | film | transformer_2d | FiLM + 2D Transformer |
+
+**ResNet18 + Position-Aware Aggregation**
+| # | 实验名称 | 融合策略 | 聚合方式 |
+|---|----------|----------|----------|
+| 104 | mm_resnet18_concat_transformer | concat | transformer |
+| 105 | mm_resnet18_concat_transformer_2d | concat | transformer_2d |
+
+#### 4.3 SimCLR 自监督预训练实验 [NEW v3.2]
+
+> 自动执行预训练→微调流程，编码器权重初始化来自 SimCLR 对比学习
+
+| # | 实验名称 | 图像编码器 | 融合策略 | 聚合方式 |
+|---|----------|-----------|----------|----------|
+| 106 | mm_simclr_cnn_concat | LightCNN | concat | mean |
+| 107 | mm_simclr_cnn_concat_trimmed | LightCNN | concat | trimmed_mean |
+| 108 | mm_simclr_cnn_gated | LightCNN | gated | mean |
+| 109 | mm_simclr_cnn_film | LightCNN | film | mean |
+| 110 | mm_simclr_cnn_transformer | LightCNN | concat | transformer |
+| 111 | mm_simclr_cnn_transformer_2d | LightCNN | concat | transformer_2d |
+| 112 | mm_simclr_mlp_concat | MLP | concat | mean |
+| 113 | mm_simclr_cnn_concat_patch | LightCNN | concat | patch_level |
+
+#### 4.4 MAE 自监督预训练实验 [NEW v3.2]
+
+> 自动执行预训练→微调流程，编码器权重初始化来自 MAE 掩码重建
+
+| # | 实验名称 | 图像编码器 | 融合策略 | 聚合方式 |
+|---|----------|-----------|----------|----------|
+| 114 | mm_mae_cnn_concat | LightCNN | concat | mean |
+| 115 | mm_mae_cnn_concat_trimmed | LightCNN | concat | trimmed_mean |
+| 116 | mm_mae_cnn_gated | LightCNN | gated | mean |
+| 117 | mm_mae_cnn_film | LightCNN | film | mean |
+| 118 | mm_mae_cnn_transformer | LightCNN | concat | transformer |
+| 119 | mm_mae_cnn_transformer_2d | LightCNN | concat | transformer_2d |
+| 120 | mm_mae_cnn_concat_patch | LightCNN | concat | patch_level |
+
+#### 4.5 ResNet 深度扩展实验 [NEW v3.2]
+
+**ResNet10（最轻量，~5.5M 参数）**
+| # | 实验名称 | 融合策略 | 聚合方式 |
+|---|----------|----------|----------|
+| 121 | mm_resnet10_concat | concat | mean |
+| 122 | mm_resnet10_gated | gated | mean |
+
+**ResNet34（~21.9M 参数）**
+| # | 实验名称 | 融合策略 | 聚合方式 |
+|---|----------|----------|----------|
+| 123 | mm_resnet34_concat | concat | mean |
+| 124 | mm_resnet34_gated | gated | mean |
+| 125 | mm_resnet34_film | film | mean |
+| 126 | mm_resnet34_pretrained | concat | mean (ImageNet) |
+
+**ResNet50（~26.3M 参数，Bottleneck）**
+| # | 实验名称 | 融合策略 | 聚合方式 | 备注 |
+|---|----------|----------|----------|------|
+| 127 | mm_resnet50_concat | concat | mean | batch_size=8 |
+| 128 | mm_resnet50_gated | gated | mean | batch_size=8 |
+| 129 | mm_resnet50_imagenet | concat | mean | ImageNet预训练 |
+
+**ResNet101（~45.3M 参数，Bottleneck）**
+| # | 实验名称 | 融合策略 | 聚合方式 | 备注 |
+|---|----------|----------|----------|------|
+| 130 | mm_resnet101_concat | concat | mean | batch_size=4 |
+| 131 | mm_resnet101_imagenet | concat | mean | ImageNet预训练 |
+
+#### 4.6 Patch-level 多模态实验
+
+| # | 实验名称 | 图像编码器 | 融合策略 | 预训练 |
+|---|----------|-----------|----------|--------|
+| 132 | mm_cnn_concat_patch | LightCNN | concat | None |
+| 133 | mm_cnn_gated_patch | LightCNN | gated | None |
+| 134 | mm_cnn_film_patch | LightCNN | film | None |
+| 135 | mm_resnet18_concat_patch | ResNet18 | concat | None |
+| 136 | mm_simclr_cnn_concat_patch | LightCNN | concat | SimCLR |
+| 137 | mm_mae_cnn_concat_patch | LightCNN | concat | MAE |
+
+#### 4.7 自定义模型
+
+| # | 实验名称 | 说明 |
+|---|----------|------|
+| 138 | mm_cnn_small_concat | 小型 LightCNN (channels=[16,32,64]) |
 
 > **多模态特点**：
 > - 政策特征维度：12 维（默认不编码，直接使用原始特征）
 > - 图像特征维度：64 维（投影后）
 > - 使用时间滞后（lag=1）防止数据泄露
+> - **新增**：自监督预训练支持自动编码器冻结 (`freeze_encoder_epochs`)
 
 ---
 
@@ -556,14 +698,19 @@ python compare_results.py
 | `transformer` | 高级 | 1D | ~400K | [CLS] Token + Transformer |
 | `transformer_2d` | 高级 | 2D | ~414K | 2D 位置 + [CLS] + Transformer |
 
-### Multimodal Model (`models/multimodal.py`) [NEW]
+### Multimodal Model (`models/multimodal.py`) [v3.2 扩展]
 
 ```
+[可选] 自监督预训练阶段 (SimCLR/MAE)
+    ↓ 预训练图像编码器
+    ↓ 保存编码器权重
+
+多模态训练阶段:
 输入 image patches (batch, 25, 64, 200, 200) + policy features (batch, 12)
     ↓
-图像编码器 (LightCNN/MLP/ResNet)
+图像编码器 (LightCNN/MLP/ResNet) [可加载预训练权重]
     ↓ encoder_dim (128)
-聚合层 (mean/median/trimmed_mean/attention/...)
+聚合层 (mean/median/trimmed_mean/attention/transformer/transformer_2d/...)
     ↓ 图像特征 (batch, 128)
     ↓ 投影 → (batch, 64)
     ↓
@@ -586,7 +733,16 @@ python compare_results.py
 | `attention` | 跨模态自注意力 | `f = mean(MultiHeadAttn([img, policy]))` |
 | `film` | 特征调制 | `f = γ(policy) * img + β(policy)` |
 
-**参数量**: ~180K（LightCNN + concat 融合）
+**新增方法 [v3.2]**:
+
+| 方法 | 功能 |
+|-----|------|
+| `load_encoder(state_dict)` | 加载预训练编码器权重 |
+| `freeze_encoder()` | 冻结图像编码器参数 |
+| `unfreeze_encoder()` | 解冻图像编码器参数 |
+| `get_encoder()` | 获取图像编码器（用于预训练） |
+
+**参数量**: ~180K（LightCNN + concat 融合），~580K（LightCNN + transformer 聚合）
 
 ---
 
@@ -862,13 +1018,18 @@ bash run_mm_simple_gpu.sh --category all --gpus 0,1,2,3
 
 | 类别 | 说明 | 实验数量 |
 |------|------|---------|
-| `all` | 所有多模态实验 | 20 |
+| `all` | 所有多模态实验 | ~75 |
 | `baseline` | LightCNN Concat | 3 |
 | `fusion` | LightCNN 融合变体 | 9 |
 | `models` | 不同架构 (MLP/CNN/ResNet) | 10 |
-| `patch` | Patch-level 训练 | 4 |
+| `patch` | Patch-level 训练（含预训练） | 6 |
 | `mlp` | MLP 模型 | 2 |
-| `resnet` | ResNet 模型 | 4 |
+| `resnet` | ResNet18/34 基础实验 | 7 |
+| `resnet_all` | 所有 ResNet 深度 (10/18/34/50/101) | ~18 |
+| `agg` | Position-Aware 聚合 [NEW] | ~12 |
+| `simclr` | SimCLR 预训练实验 [NEW] | ~10 |
+| `mae` | MAE 预训练实验 [NEW] | ~8 |
+| `ssl` | 所有自监督预训练 (SimCLR+MAE) [NEW] | ~18 |
 
 **参数说明**:
 
@@ -936,6 +1097,70 @@ wandb>=0.15.0
 ---
 
 ## 更新日志
+
+### v3.2 (2026-01-29)
+
+**重大更新：多模态模型支持自监督预训练与位置感知聚合**
+
+#### 自监督预训练集成
+
+多模态训练现支持自动化的自监督预训练→微调流程：
+
+- **SimCLR 预训练**：对比学习预训练图像编码器
+  - 支持 LightCNN 和 MLP 编码器
+  - 自动执行预训练→加载权重→微调流程
+  - 配置：`temperature=0.5`, `projection_dim=128`, `pretrain_epochs=50`
+- **MAE 预训练**：掩码自编码器预训练图像编码器
+  - 支持 LightCNN 编码器
+  - 配置：`mask_ratio=0.75`, `decoder_dim=256`
+- **编码器冻结机制**：预训练后可冻结编码器若干轮 (`freeze_encoder_epochs`)
+
+```bash
+# 示例：SimCLR 预训练 + 多模态微调
+python train_multimodal.py --exp mm_simclr_cnn_concat --gpu 0
+```
+
+#### 位置感知聚合扩展
+
+多模态模型现支持所有位置感知聚合策略：
+
+| 聚合方式 | 说明 | 新增实验 |
+|---------|------|---------|
+| `attention` | MLP 注意力聚合 | `mm_cnn_concat_attn_agg` |
+| `pos_attention` | 1D 位置编码 + 注意力 | `mm_cnn_concat_pos_attn` |
+| `spatial_attention` | 2D 空间位置编码 | `mm_cnn_concat_spatial_attn` |
+| `transformer` | [CLS] Token + Transformer | `mm_cnn_concat_transformer` |
+| `transformer_2d` | 2D 位置 + Transformer | `mm_cnn_concat_transformer_2d` |
+
+#### ResNet 深度扩展
+
+多模态模型新增更多 ResNet 深度支持：
+
+| 模型 | 参数量 | 新增实验 | Batch Size |
+|------|--------|---------|------------|
+| ResNet10 | ~5.5M | `mm_resnet10_concat`, `mm_resnet10_gated` | 16 |
+| ResNet34 | ~21.9M | `mm_resnet34_concat/gated/film` | 16 |
+| ResNet50 | ~26.3M | `mm_resnet50_concat/gated/imagenet` | 8 |
+| ResNet101 | ~45.3M | `mm_resnet101_concat/imagenet` | 4 |
+
+#### 配置改进
+
+- **MLP 隐藏层可配置**：`mlp_hidden_dims` 参数支持自定义 MLP 结构
+- **trim_ratio 可配置**：Patch-level 评估的 `trim_ratio` 可通过 `train_config.patch_level_trim_ratio` 配置
+- **预训练配置类**：新增 `SimCLRConfig` 和 `MAEConfig` 数据类
+
+#### 运行脚本更新
+
+- **新增实验类别**：`agg`, `simclr`, `mae`, `ssl`, `resnet_all`
+- **路径修复**：`RESULT_DIR` 与训练脚本保持一致
+
+#### 实验数量
+
+- **新增实验配置**：~44 个多模态实验
+- **总多模态实验**：31 → ~75
+- **总实验配置**：111 → ~155
+
+---
 
 ### v3.1 (2026-01-26)
 

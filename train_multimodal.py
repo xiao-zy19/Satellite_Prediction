@@ -1,14 +1,23 @@
 """
 Training script for multimodal experiments (Image + Policy features)
 
+Supports:
+- City-level and patch-level training modes
+- Various fusion strategies (concat, gated, attention, film)
+- Position-Aware aggregation (attention, transformer, etc.)
+- Self-supervised pretraining (SimCLR, MAE) for image encoder
+
 Usage:
     python train_multimodal.py --exp mm_cnn_concat --gpu 0
     python train_multimodal.py --exp mm_cnn_gated --gpu 0 --seed 123
+    python train_multimodal.py --exp mm_simclr_cnn_concat --gpu 0  # with SimCLR pretrain
 """
 
 import os
 import sys
 import time
+import ssl
+ssl._create_default_https_context = ssl._create_unverified_context  # Fix SSL certificate issue
 import argparse
 import pickle
 import numpy as np
@@ -24,15 +33,22 @@ from config_multimodal import (
     get_multimodal_experiment_config,
     print_multimodal_config,
     MultiModalExperimentConfig,
-    MULTIMODAL_EXPERIMENTS
+    MULTIMODAL_EXPERIMENTS,
+    SimCLRConfig,
+    MAEConfig
 )
 from dataset_policy import get_policy_dataloaders, get_patch_level_policy_dataloaders
+from dataset import get_pretrain_dataloader  # For self-supervised pretraining
 from models import MultiModalModel
 from utils import (
     set_seed, get_device, setup_logging, get_optimizer,
     compute_metrics, EarlyStopping, AverageMeter, save_checkpoint,
     format_time, count_parameters
 )
+
+# Pretrain modules
+from pretrain.simclr import pretrain_simclr
+from pretrain.mae import pretrain_mae
 
 # Wandb
 try:
@@ -127,7 +143,8 @@ class MultiModalTrainer:
         test_loader: DataLoader = None,
         is_patch_level: bool = False,
         run_id: str = None,
-        normalize_on_gpu: bool = False
+        normalize_on_gpu: bool = False,
+        freeze_encoder_epochs: int = 0  # NEW: number of epochs to freeze encoder
     ):
         self.model = model.to(device)
         self.train_loader = train_loader
@@ -141,6 +158,7 @@ class MultiModalTrainer:
         self.is_patch_level = is_patch_level
         self.run_id = run_id if run_id else exp_config.exp_name
         self.normalize_on_gpu = normalize_on_gpu
+        self.freeze_encoder_epochs = freeze_encoder_epochs  # NEW
 
         # Loss function
         self.criterion = nn.MSELoss()
@@ -275,6 +293,8 @@ class MultiModalTrainer:
         print(f"Model parameters: {count_parameters(self.model):,}")
         if self.is_patch_level:
             print("Mode: PATCH-LEVEL (evaluating with 3 aggregation methods)")
+        if self.freeze_encoder_epochs > 0:
+            print(f"Encoder will be FROZEN for first {self.freeze_encoder_epochs} epochs")
 
         early_stopping = EarlyStopping(
             patience=self.train_config.patience,
@@ -282,8 +302,18 @@ class MultiModalTrainer:
         )
         start_time = time.time()
 
+        # Initially freeze encoder if specified
+        if self.freeze_encoder_epochs > 0:
+            self.model.freeze_encoder()
+            print("  [Encoder FROZEN]")
+
         for epoch in range(1, num_epochs + 1):
             epoch_start = time.time()
+
+            # Unfreeze encoder after freeze_encoder_epochs
+            if self.freeze_encoder_epochs > 0 and epoch == self.freeze_encoder_epochs + 1:
+                self.model.unfreeze_encoder()
+                print(f"\n  [Encoder UNFROZEN at epoch {epoch}]")
 
             # Train
             train_loss, train_metrics = self.train_epoch(epoch)
@@ -298,13 +328,19 @@ class MultiModalTrainer:
 
             if self.is_patch_level:
                 # Patch-level: evaluate with 3 aggregation methods
+                # Use trim_ratio from train_config
+                trim_ratio = self.train_config.patch_level_trim_ratio
                 val_results = evaluate_patch_level_multimodal(
-                    self.model, self.val_loader, self.device, normalize_on_gpu=self.normalize_on_gpu
+                    self.model, self.val_loader, self.device,
+                    normalize_on_gpu=self.normalize_on_gpu,
+                    trim_ratio=trim_ratio
                 )
                 test_results = None
                 if self.test_loader is not None:
                     test_results = evaluate_patch_level_multimodal(
-                        self.model, self.test_loader, self.device, normalize_on_gpu=self.normalize_on_gpu
+                        self.model, self.test_loader, self.device,
+                        normalize_on_gpu=self.normalize_on_gpu,
+                        trim_ratio=trim_ratio
                     )
 
                 # Update history for all 3 methods
@@ -320,7 +356,9 @@ class MultiModalTrainer:
                         self.history[f'test_{agg_method}_pearson_r'].append(tm['pearson_r'])
                         self.history[f'test_{agg_method}_mae'].append(tm['mae'])
 
-                primary_metric = val_results['trimmed_mean']['metrics']['r2']
+                # Use configured aggregation method for primary metric (default: trimmed_mean)
+                agg_method_for_primary = self.train_config.patch_level_aggregation
+                primary_metric = val_results[agg_method_for_primary]['metrics']['r2']
 
                 # Log to wandb
                 if self.use_wandb:
@@ -346,16 +384,16 @@ class MultiModalTrainer:
                 epoch_time = time.time() - epoch_start
                 print(f"\nEpoch {epoch}/{num_epochs} ({format_time(epoch_time)})")
                 print(f"  Train Loss: {train_loss:.4f} | Pearson r: {train_metrics['pearson_r']:.4f}")
-                print(f"  Val (3 agg methods):")
+                print(f"  Val (3 agg methods, primary: {agg_method_for_primary}):")
                 for agg_method in ['mean', 'median', 'trimmed_mean']:
                     vm = val_results[agg_method]['metrics']
-                    marker = " *" if agg_method == 'trimmed_mean' else ""
+                    marker = " *" if agg_method == agg_method_for_primary else ""
                     print(f"    {agg_method:12s}: R²={vm['r2']:.4f} | r={vm['pearson_r']:.4f} | MAE={vm['mae']:.4f}{marker}")
                 print(f"  LR: {current_lr:.2e}")
 
                 if self.logger:
-                    vm = val_results['trimmed_mean']['metrics']
-                    self.logger.info(f"Epoch {epoch}: train_loss={train_loss:.4f}, val_trimmed_mean_r2={vm['r2']:.4f}")
+                    vm = val_results[agg_method_for_primary]['metrics']
+                    self.logger.info(f"Epoch {epoch}: train_loss={train_loss:.4f}, val_{agg_method_for_primary}_r2={vm['r2']:.4f}")
 
                 # Save best model
                 if primary_metric > self.best_val_metric:
@@ -367,7 +405,7 @@ class MultiModalTrainer:
                         'optimizer_state_dict': self.optimizer.state_dict(),
                         'val_metrics': {agg: val_results[agg]['metrics'] for agg in val_results}
                     }
-                    print(f"  >> New best model! (trimmed_mean R²={primary_metric:.4f})")
+                    print(f"  >> New best model! ({agg_method_for_primary} R²={primary_metric:.4f})")
                     save_checkpoint(self.best_model_state, self.run_id, 'best_model.pth')
 
                 if early_stopping(primary_metric):
@@ -502,8 +540,17 @@ def evaluate_multimodal(model, data_loader, device, normalize_on_gpu: bool = Fal
 
 
 @torch.no_grad()
-def evaluate_patch_level_multimodal(model, data_loader, device, num_patches: int = 25, normalize_on_gpu: bool = False):
-    """Evaluate patch-level multimodal model with THREE aggregation methods."""
+def evaluate_patch_level_multimodal(model, data_loader, device, num_patches: int = 25, normalize_on_gpu: bool = False, trim_ratio: float = 0.1):
+    """Evaluate patch-level multimodal model with THREE aggregation methods.
+
+    Args:
+        model: The model to evaluate
+        data_loader: DataLoader for evaluation data
+        device: Device to run on
+        num_patches: Number of patches per sample (default 25)
+        normalize_on_gpu: Whether to normalize on GPU
+        trim_ratio: Trim ratio for trimmed_mean aggregation (default 0.1, configurable via train_config.patch_level_trim_ratio)
+    """
     model.eval()
 
     sample_predictions = {}
@@ -553,10 +600,11 @@ def evaluate_patch_level_multimodal(model, data_loader, device, num_patches: int
     def aggregate_median(preds):
         return np.median(preds)
 
-    def aggregate_trimmed_mean(preds, trim_ratio=0.1):
+    # Use trim_ratio from parameter (passed from train_config.patch_level_trim_ratio)
+    def aggregate_trimmed_mean(preds, tr=trim_ratio):
         sorted_preds = np.sort(preds)
         n = len(sorted_preds)
-        n_trim = int(n * trim_ratio)
+        n_trim = int(n * tr)
         if n_trim == 0:
             return np.mean(sorted_preds)
         return np.mean(sorted_preds[n_trim:-n_trim])
@@ -643,7 +691,57 @@ def run_multimodal_experiment(exp_name: str, gpu_id: int = 0, seed: int = config
     is_patch_level = (training_mode == "patch_level")
     logger.info(f"Training mode: {training_mode}")
 
-    # Load data
+    # ==========================================================================
+    # Self-Supervised Pretraining (if enabled)
+    # ==========================================================================
+    encoder_state_dict = None
+    if exp_config.use_pretrain and exp_config.pretrain_config is not None:
+        pretrain_config = exp_config.pretrain_config
+        train_config = exp_config.train_config
+
+        logger.info(f"\n{'='*60}")
+        logger.info(f"Starting Self-Supervised Pretraining: {pretrain_config.name}")
+        logger.info(f"{'='*60}")
+
+        # Get pretrain dataloader
+        # For SimCLR, we need contrastive=True (two views)
+        # For MAE, we need contrastive=False (single view)
+        is_contrastive = (pretrain_config.name == "simclr")
+        pretrain_loader = get_pretrain_dataloader(
+            batch_size=train_config.batch_size,
+            num_workers=exp_config.num_workers,
+            contrastive=is_contrastive
+        )
+        logger.info(f"Pretrain loader created (contrastive={is_contrastive})")
+
+        # Run pretraining
+        if pretrain_config.name == "simclr":
+            encoder_state_dict = pretrain_simclr(
+                pretrain_loader=pretrain_loader,
+                simclr_config=pretrain_config,
+                train_config=train_config,
+                device=device,
+                logger=logger,
+                exp_name=run_id
+            )
+        elif pretrain_config.name == "mae":
+            encoder_state_dict = pretrain_mae(
+                pretrain_loader=pretrain_loader,
+                mae_config=pretrain_config,
+                train_config=train_config,
+                device=device,
+                logger=logger,
+                exp_name=run_id
+            )
+        else:
+            raise ValueError(f"Unknown pretrain method: {pretrain_config.name}")
+
+        logger.info(f"Pretraining completed. Encoder weights obtained.")
+        logger.info(f"{'='*60}\n")
+
+    # ==========================================================================
+    # Load Multimodal Data
+    # ==========================================================================
     logger.info("Loading data with policy features...")
     if is_patch_level:
         train_loader, val_loader, test_loader, dataset_info = get_patch_level_policy_dataloaders(
@@ -665,15 +763,37 @@ def run_multimodal_experiment(exp_name: str, gpu_id: int = 0, seed: int = config
     # Init wandb
     use_wandb = init_wandb(exp_config, dataset_info, seed, run_id)
 
-    # Create model
+    # ==========================================================================
+    # Create Multimodal Model
+    # ==========================================================================
     logger.info("Creating multimodal model...")
     model = create_multimodal_model(exp_config.model_config, patch_level=is_patch_level)
     logger.info(f"Model parameters: {count_parameters(model):,}")
+
+    # Load pretrained encoder weights (if available)
+    if encoder_state_dict is not None:
+        logger.info("Loading pretrained encoder weights into multimodal model...")
+        try:
+            model.load_encoder(encoder_state_dict)
+            logger.info("Pretrained encoder weights loaded successfully!")
+
+            # Optionally freeze encoder for first few epochs
+            freeze_epochs = exp_config.train_config.freeze_encoder_epochs
+            if freeze_epochs > 0:
+                logger.info(f"Will freeze encoder for first {freeze_epochs} epochs")
+        except Exception as e:
+            logger.warning(f"Failed to load pretrained weights: {e}")
+            logger.warning("Continuing with randomly initialized encoder...")
 
     # Move model to device
     model = model.to(device)
 
     # Create trainer
+    # Determine freeze_encoder_epochs (only if pretrain was used)
+    freeze_encoder_epochs = 0
+    if encoder_state_dict is not None:
+        freeze_encoder_epochs = exp_config.train_config.freeze_encoder_epochs
+
     trainer = MultiModalTrainer(
         model=model,
         train_loader=train_loader,
@@ -685,7 +805,8 @@ def run_multimodal_experiment(exp_name: str, gpu_id: int = 0, seed: int = config
         test_loader=test_loader,
         is_patch_level=is_patch_level,
         run_id=run_id,
-        normalize_on_gpu=normalize_on_gpu
+        normalize_on_gpu=normalize_on_gpu,
+        freeze_encoder_epochs=freeze_encoder_epochs
     )
 
     # Train
@@ -695,11 +816,24 @@ def run_multimodal_experiment(exp_name: str, gpu_id: int = 0, seed: int = config
     logger.info("\nEvaluating on test set...")
 
     if is_patch_level:
-        val_results = evaluate_patch_level_multimodal(model, val_loader, device, normalize_on_gpu=normalize_on_gpu)
-        test_results = evaluate_patch_level_multimodal(model, test_loader, device, normalize_on_gpu=normalize_on_gpu)
+        # Use trim_ratio from config for final evaluation
+        trim_ratio = exp_config.train_config.patch_level_trim_ratio
+        val_results = evaluate_patch_level_multimodal(
+            model, val_loader, device,
+            normalize_on_gpu=normalize_on_gpu,
+            trim_ratio=trim_ratio
+        )
+        test_results = evaluate_patch_level_multimodal(
+            model, test_loader, device,
+            normalize_on_gpu=normalize_on_gpu,
+            trim_ratio=trim_ratio
+        )
+
+        # Determine which aggregation method is primary
+        primary_agg = exp_config.train_config.patch_level_aggregation
 
         print("\n" + "=" * 60)
-        print("Final Results (Multimodal Patch-Level with 3 Aggregation Methods)")
+        print(f"Final Results (Multimodal Patch-Level, primary agg: {primary_agg}, trim_ratio: {trim_ratio})")
         print("=" * 60)
 
         print("\nValidation Set:")
