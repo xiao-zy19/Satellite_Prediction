@@ -1,19 +1,22 @@
 """
-Unified training script for all experiments
+Training script for multimodal BERT experiments (Image + BERT Policy features)
 
-Supports:
-1. Baseline models (MLP, LightCNN, ResNet)
-2. Self-supervised pretraining (SimCLR, MAE) + finetuning
+Based on train_multimodal.py, extended to support:
+- BERT policy embeddings from pre-computed cache
+- Hybrid mode (BERT + structured features)
+- All original features (SimCLR, MAE, Position-Aware Aggregation)
 
-FIXED:
-- Proper weight transfer from SimCLR/MAE pretrained encoders
-- Checkpoint saving for pretrained models
-- Better logging and error handling
+Usage:
+    python train_multimodal_bert.py --exp bert_cnn_concat --gpu 0
+    python train_multimodal_bert.py --exp hybrid_cnn_gated --gpu 0 --seed 123
+    python train_multimodal_bert.py --exp bert_simclr_cnn_concat --gpu 0  # with SimCLR pretrain
 """
 
 import os
 import sys
 import time
+import ssl
+ssl._create_default_https_context = ssl._create_unverified_context
 import argparse
 import pickle
 import numpy as np
@@ -23,19 +26,29 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 import matplotlib
 matplotlib.use('Agg')
-import matplotlib.pyplot as plt
 
 import config
-from config import get_experiment_config, print_config, ExperimentConfig
-from dataset import get_dataloaders, get_pretrain_dataloader, get_patch_level_dataloaders
-from models import MLPModel, LightCNN, ResNetBaseline
-from pretrain.simclr import pretrain_simclr
-from pretrain.mae import pretrain_mae
+from config_multimodal_bert import (
+    get_bert_multimodal_experiment_config,
+    print_bert_multimodal_config,
+    MultiModalBertExperimentConfig,
+    BERT_MULTIMODAL_EXPERIMENTS,
+    SimCLRConfig,
+    MAEConfig
+)
+from dataset_policy_bert import get_bert_policy_dataloaders, get_patch_level_bert_policy_dataloaders
+from dataset import get_pretrain_dataloader
+from models.multimodal_bert import create_bert_multimodal_model
+from policy_bert import get_policy_bert_cache
 from utils import (
-    set_seed, get_device, setup_logging, get_optimizer, get_scheduler,
+    set_seed, get_device, setup_logging, get_optimizer,
     compute_metrics, EarlyStopping, AverageMeter, save_checkpoint,
     format_time, count_parameters
 )
+
+# Pretrain modules
+from pretrain.simclr import pretrain_simclr
+from pretrain.mae import pretrain_mae
 
 # Wandb
 try:
@@ -46,47 +59,45 @@ except ImportError:
     print("Warning: wandb not installed")
 
 
-def create_model(model_config, patch_level: bool = False):
-    """Create model based on configuration.
-
-    Args:
-        model_config: Model configuration
-        patch_level: If True, create model for patch-level training (no internal aggregation)
-    """
-    if model_config.name == "mlp":
-        return MLPModel(model_config, patch_level=patch_level)
-    elif model_config.name == "light_cnn":
-        return LightCNN(model_config, patch_level=patch_level)
-    elif model_config.name == "resnet":
-        return ResNetBaseline(model_config, patch_level=patch_level)
+def get_scheduler(optimizer, train_config):
+    """Get learning rate scheduler."""
+    if train_config.scheduler == "cosine_warm_restarts":
+        return torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            optimizer,
+            T_0=train_config.t_max,
+            T_mult=train_config.t_mult,
+            eta_min=train_config.eta_min
+        )
+    elif train_config.scheduler == "cosine":
+        return torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=train_config.num_epochs,
+            eta_min=train_config.eta_min
+        )
     else:
-        raise ValueError(f"Unknown model: {model_config.name}")
+        return None
 
 
-def init_wandb(exp_config: ExperimentConfig, dataset_info: dict, seed: int, run_id: str) -> bool:
-    """Initialize wandb.
-
-    Args:
-        exp_config: Experiment configuration
-        dataset_info: Dataset information dict
-        seed: Random seed used for this run
-        run_id: Unique run identifier (includes seed if non-default)
-    """
+def init_wandb(exp_config: MultiModalBertExperimentConfig, dataset_info: dict, seed: int, run_id: str) -> bool:
+    """Initialize wandb."""
     if not exp_config.wandb_enabled or not WANDB_AVAILABLE:
         return False
 
-    # 在实验名称中加入时间戳，便于查找
     from datetime import datetime
     timestamp = datetime.now().strftime("%m%d_%H%M")
     run_name = f"{run_id}_{timestamp}"
+
+    mc = exp_config.model_config
+    ps = mc.policy_source
 
     wandb_config = {
         "experiment": exp_config.exp_name,
         "run_id": run_id,
         "seed": seed,
-        "model": exp_config.model_config.name,
-        "use_pretrain": exp_config.use_pretrain,
-        "pretrain_method": exp_config.pretrain_config.name if exp_config.pretrain_config else "none",
+        "image_encoder": mc.image_encoder_type,
+        "fusion_type": mc.fusion_type,
+        "policy_source": ps.source,
+        "policy_dim": ps.policy_dim,
         "training_mode": exp_config.train_config.training_mode,
         "batch_size": exp_config.train_config.batch_size,
         "learning_rate": exp_config.train_config.learning_rate,
@@ -106,66 +117,84 @@ def init_wandb(exp_config: ExperimentConfig, dataset_info: dict, seed: int, run_
     return True
 
 
-class Trainer:
-    """Unified trainer for all models."""
+def _gpu_normalize(patches: torch.Tensor) -> torch.Tensor:
+    """
+    Perform per-patch per-channel normalization on GPU.
+
+    Args:
+        patches: (batch, 25, 64, 200, 200) for city-level
+                or (batch, 64, 200, 200) for patch-level
+
+    Returns:
+        Normalized patches with same shape
+    """
+    if patches.dim() == 5:
+        mean = patches.mean(dim=(-2, -1), keepdim=True)
+        std = patches.std(dim=(-2, -1), keepdim=True) + 1e-8
+    elif patches.dim() == 4:
+        mean = patches.mean(dim=(-2, -1), keepdim=True)
+        std = patches.std(dim=(-2, -1), keepdim=True) + 1e-8
+    else:
+        raise ValueError(f"Unexpected patches dimension: {patches.dim()}")
+    return (patches - mean) / std
+
+
+class MultiModalBertTrainer:
+    """Trainer for multimodal BERT models."""
 
     def __init__(
         self,
         model: nn.Module,
         train_loader: DataLoader,
         val_loader: DataLoader,
-        exp_config: ExperimentConfig,
+        exp_config: MultiModalBertExperimentConfig,
         device: torch.device,
         logger=None,
         use_wandb: bool = False,
         test_loader: DataLoader = None,
         is_patch_level: bool = False,
         run_id: str = None,
-        normalize_on_gpu: bool = False
+        normalize_on_gpu: bool = False,
+        freeze_encoder_epochs: int = 0
     ):
         self.model = model.to(device)
         self.train_loader = train_loader
         self.val_loader = val_loader
-        self.test_loader = test_loader  # 添加测试集 loader
+        self.test_loader = test_loader
         self.exp_config = exp_config
         self.train_config = exp_config.train_config
         self.device = device
         self.logger = logger
         self.use_wandb = use_wandb
-        self.is_patch_level = is_patch_level  # Patch-level mode flag
-        self.run_id = run_id if run_id else exp_config.exp_name  # 用于保存 checkpoint
+        self.is_patch_level = is_patch_level
+        self.run_id = run_id if run_id else exp_config.exp_name
         self.normalize_on_gpu = normalize_on_gpu
+        self.freeze_encoder_epochs = freeze_encoder_epochs
 
         # Loss function
         self.criterion = nn.MSELoss()
 
         # Optimizer and scheduler
-        self.optimizer = get_optimizer(
-            model,
-            self.train_config.learning_rate,
-            self.train_config.weight_decay
+        self.optimizer = torch.optim.AdamW(
+            model.parameters(),
+            lr=self.train_config.learning_rate,
+            weight_decay=self.train_config.weight_decay
         )
         self.scheduler = get_scheduler(self.optimizer, self.train_config)
 
-        # History - track metrics per mode
+        # History
         if is_patch_level:
-            # Patch-level: 3 aggregation methods (mean, median, trimmed_mean)
-            # Because model predicts per-patch, aggregation happens at evaluation
             self.history = {
                 'train_loss': [],
                 'learning_rate': [],
-                # Val metrics for all 3 aggregation methods
                 'val_mean_r2': [], 'val_mean_pearson_r': [], 'val_mean_mae': [],
                 'val_median_r2': [], 'val_median_pearson_r': [], 'val_median_mae': [],
                 'val_trimmed_mean_r2': [], 'val_trimmed_mean_pearson_r': [], 'val_trimmed_mean_mae': [],
-                # Test metrics for all 3 aggregation methods
                 'test_mean_r2': [], 'test_mean_pearson_r': [], 'test_mean_mae': [],
                 'test_median_r2': [], 'test_median_pearson_r': [], 'test_median_mae': [],
                 'test_trimmed_mean_r2': [], 'test_trimmed_mean_pearson_r': [], 'test_trimmed_mean_mae': [],
             }
         else:
-            # City-level: single aggregation (model's built-in method)
-            # Training and evaluation use the SAME aggregation - this is correct!
             self.history = {
                 'train_loss': [],
                 'learning_rate': [],
@@ -173,33 +202,9 @@ class Trainer:
                 'test_r2': [], 'test_pearson_r': [], 'test_mae': [],
             }
 
-        # Best model tracking (use trimmed_mean R² for patch-level)
-        self.best_val_metric = float('-inf')  # Track best R² (higher is better)
+        self.best_val_metric = float('-inf')
         self.best_epoch = 0
         self.best_model_state = None
-
-    def _gpu_normalize(self, patches: torch.Tensor) -> torch.Tensor:
-        """
-        Perform per-patch per-channel normalization on GPU.
-
-        Args:
-            patches: (batch, 25, 64, 200, 200) for city-level
-                    or (batch, 64, 200, 200) for patch-level
-
-        Returns:
-            Normalized patches with same shape
-        """
-        if patches.dim() == 5:
-            # city-level: (batch, num_patches, channels, H, W)
-            mean = patches.mean(dim=(-2, -1), keepdim=True)
-            std = patches.std(dim=(-2, -1), keepdim=True) + 1e-8
-        elif patches.dim() == 4:
-            # patch-level: (batch, channels, H, W)
-            mean = patches.mean(dim=(-2, -1), keepdim=True)
-            std = patches.std(dim=(-2, -1), keepdim=True) + 1e-8
-        else:
-            raise ValueError(f"Unexpected patches dimension: {patches.dim()}")
-        return (patches - mean) / std
 
     def train_epoch(self, epoch: int):
         """Train for one epoch."""
@@ -209,14 +214,15 @@ class Trainer:
         all_preds = []
 
         pbar = tqdm(self.train_loader, desc=f"Epoch {epoch} [Train]")
-        for patches, labels, _ in pbar:
+        for patches, policy_feat, labels, _ in pbar:
             patches = patches.to(self.device)
             if self.normalize_on_gpu:
-                patches = self._gpu_normalize(patches)
+                patches = _gpu_normalize(patches)
+            policy_feat = policy_feat.to(self.device)
             labels = labels.to(self.device)
 
             self.optimizer.zero_grad()
-            outputs = self.model(patches)
+            outputs = self.model(patches, policy_feat)
             loss = self.criterion(outputs, labels)
 
             loss.backward()
@@ -235,26 +241,22 @@ class Trainer:
         return loss_meter.avg, train_metrics
 
     @torch.no_grad()
-    def validate(self, epoch: int):
-        """Validate the model on validation set."""
-        return self.validate_on_loader(self.val_loader, f"Epoch {epoch} [Val]")
-
-    @torch.no_grad()
     def validate_on_loader(self, data_loader: DataLoader, desc: str = "Eval"):
-        """Validate the model on a given data loader."""
+        """Validate the model on a given data loader (city-level mode)."""
         self.model.eval()
         loss_meter = AverageMeter()
         all_labels = []
         all_preds = []
 
         pbar = tqdm(data_loader, desc=desc, leave=False)
-        for patches, labels, _ in pbar:
+        for patches, policy_feat, labels, _ in pbar:
             patches = patches.to(self.device)
             if self.normalize_on_gpu:
-                patches = self._gpu_normalize(patches)
+                patches = _gpu_normalize(patches)
+            policy_feat = policy_feat.to(self.device)
             labels = labels.to(self.device)
 
-            outputs = self.model(patches)
+            outputs = self.model(patches, policy_feat)
             loss = self.criterion(outputs, labels)
 
             loss_meter.update(loss.item(), patches.size(0))
@@ -274,23 +276,34 @@ class Trainer:
         if num_epochs is None:
             num_epochs = self.train_config.num_epochs
 
-        print(f"\nStarting training for {num_epochs} epochs...")
+        print(f"\nStarting multimodal BERT training for {num_epochs} epochs...")
         print(f"Device: {self.device}")
         print(f"Model parameters: {count_parameters(self.model):,}")
         if self.is_patch_level:
             print("Mode: PATCH-LEVEL (evaluating with 3 aggregation methods)")
+        if self.normalize_on_gpu:
+            print("[GPU Normalization ENABLED]")
+        if self.freeze_encoder_epochs > 0:
+            print(f"Encoder will be FROZEN for first {self.freeze_encoder_epochs} epochs")
 
-        # Both modes use R² as primary metric (higher is better)
-        # - Patch-level: uses trimmed_mean R²
-        # - City-level: uses val R²
         early_stopping = EarlyStopping(
             patience=self.train_config.patience,
-            mode='max'  # R² is always higher-is-better
+            mode='max'
         )
         start_time = time.time()
 
+        # Initially freeze encoder if specified
+        if self.freeze_encoder_epochs > 0:
+            self.model.freeze_encoder()
+            print("  [Encoder FROZEN]")
+
         for epoch in range(1, num_epochs + 1):
             epoch_start = time.time()
+
+            # Unfreeze encoder after freeze_encoder_epochs
+            if self.freeze_encoder_epochs > 0 and epoch == self.freeze_encoder_epochs + 1:
+                self.model.unfreeze_encoder()
+                print(f"\n  [Encoder UNFROZEN at epoch {epoch}]")
 
             # Train
             train_loss, train_metrics = self.train_epoch(epoch)
@@ -306,14 +319,18 @@ class Trainer:
             if self.is_patch_level:
                 # Patch-level: evaluate with 3 aggregation methods
                 trim_ratio = self.train_config.patch_level_trim_ratio
-                val_results = evaluate_patch_level(self.model, self.val_loader, self.device,
-                                                   normalize_on_gpu=self.normalize_on_gpu,
-                                                   trim_ratio=trim_ratio)
+                val_results = evaluate_patch_level(
+                    self.model, self.val_loader, self.device,
+                    normalize_on_gpu=self.normalize_on_gpu,
+                    trim_ratio=trim_ratio
+                )
                 test_results = None
                 if self.test_loader is not None:
-                    test_results = evaluate_patch_level(self.model, self.test_loader, self.device,
-                                                        normalize_on_gpu=self.normalize_on_gpu,
-                                                        trim_ratio=trim_ratio)
+                    test_results = evaluate_patch_level(
+                        self.model, self.test_loader, self.device,
+                        normalize_on_gpu=self.normalize_on_gpu,
+                        trim_ratio=trim_ratio
+                    )
 
                 # Update history for all 3 methods
                 for agg_method in ['mean', 'median', 'trimmed_mean']:
@@ -328,8 +345,9 @@ class Trainer:
                         self.history[f'test_{agg_method}_pearson_r'].append(tm['pearson_r'])
                         self.history[f'test_{agg_method}_mae'].append(tm['mae'])
 
-                # Use trimmed_mean R² as the primary metric for early stopping
-                primary_metric = val_results['trimmed_mean']['metrics']['r2']
+                # Use configured aggregation method for primary metric
+                agg_method_for_primary = self.train_config.patch_level_aggregation
+                primary_metric = val_results[agg_method_for_primary]['metrics']['r2']
 
                 # Log to wandb
                 if self.use_wandb:
@@ -355,24 +373,18 @@ class Trainer:
                 epoch_time = time.time() - epoch_start
                 print(f"\nEpoch {epoch}/{num_epochs} ({format_time(epoch_time)})")
                 print(f"  Train Loss: {train_loss:.4f} | Pearson r: {train_metrics['pearson_r']:.4f}")
-                print(f"  Val (3 agg methods):")
+                print(f"  Val (3 agg methods, primary: {agg_method_for_primary}):")
                 for agg_method in ['mean', 'median', 'trimmed_mean']:
                     vm = val_results[agg_method]['metrics']
-                    marker = " *" if agg_method == 'trimmed_mean' else ""
+                    marker = " *" if agg_method == agg_method_for_primary else ""
                     print(f"    {agg_method:12s}: R²={vm['r2']:.4f} | r={vm['pearson_r']:.4f} | MAE={vm['mae']:.4f}{marker}")
-                if test_results is not None:
-                    print(f"  Test (3 agg methods):")
-                    for agg_method in ['mean', 'median', 'trimmed_mean']:
-                        tm = test_results[agg_method]['metrics']
-                        print(f"    {agg_method:12s}: R²={tm['r2']:.4f} | r={tm['pearson_r']:.4f} | MAE={tm['mae']:.4f}")
                 print(f"  LR: {current_lr:.2e}")
 
                 if self.logger:
-                    vm = val_results['trimmed_mean']['metrics']
-                    log_msg = f"Epoch {epoch}: train_loss={train_loss:.4f}, val_trimmed_mean_r2={vm['r2']:.4f}"
-                    self.logger.info(log_msg)
+                    vm = val_results[agg_method_for_primary]['metrics']
+                    self.logger.info(f"Epoch {epoch}: train_loss={train_loss:.4f}, val_{agg_method_for_primary}_r2={vm['r2']:.4f}")
 
-                # Save best model (based on trimmed_mean R²)
+                # Save best model
                 if primary_metric > self.best_val_metric:
                     self.best_val_metric = primary_metric
                     self.best_epoch = epoch
@@ -382,23 +394,20 @@ class Trainer:
                         'optimizer_state_dict': self.optimizer.state_dict(),
                         'val_metrics': {agg: val_results[agg]['metrics'] for agg in val_results}
                     }
-                    print(f"  >> New best model! (trimmed_mean R²={primary_metric:.4f})")
+                    print(f"  >> New best model! ({agg_method_for_primary} R²={primary_metric:.4f})")
                     save_checkpoint(self.best_model_state, self.run_id, 'best_model.pth')
 
-                # Early stopping (based on trimmed_mean R²)
                 if early_stopping(primary_metric):
                     print(f"\nEarly stopping at epoch {epoch}")
                     break
 
             else:
-                # City-level: evaluate using model's built-in aggregation ONLY
-                # Training and evaluation use the SAME aggregation method
+                # City-level mode
                 val_loss, val_metrics, _, _ = self.validate_on_loader(self.val_loader, f"Epoch {epoch} [Val]")
                 test_metrics = None
                 if self.test_loader is not None:
                     _, test_metrics, _, _ = self.validate_on_loader(self.test_loader, f"Epoch {epoch} [Test]")
 
-                # Update history
                 self.history['val_r2'].append(val_metrics['r2'])
                 self.history['val_pearson_r'].append(val_metrics['pearson_r'])
                 self.history['val_mae'].append(val_metrics['mae'])
@@ -407,7 +416,6 @@ class Trainer:
                     self.history['test_pearson_r'].append(test_metrics['pearson_r'])
                     self.history['test_mae'].append(test_metrics['mae'])
 
-                # Use val R² as primary metric for early stopping
                 primary_metric = val_metrics['r2']
 
                 # Log to wandb
@@ -437,12 +445,9 @@ class Trainer:
                 print(f"  LR: {current_lr:.2e}")
 
                 if self.logger:
-                    log_msg = f"Epoch {epoch}: train_loss={train_loss:.4f}, val_r2={val_metrics['r2']:.4f}"
-                    if test_metrics is not None:
-                        log_msg += f", test_r2={test_metrics['r2']:.4f}"
-                    self.logger.info(log_msg)
+                    self.logger.info(f"Epoch {epoch}: train_loss={train_loss:.4f}, val_r2={val_metrics['r2']:.4f}")
 
-                # Save best model (based on val R²)
+                # Save best model
                 if primary_metric > self.best_val_metric:
                     self.best_val_metric = primary_metric
                     self.best_epoch = epoch
@@ -455,7 +460,6 @@ class Trainer:
                     print(f"  >> New best model! (R²={primary_metric:.4f})")
                     save_checkpoint(self.best_model_state, self.run_id, 'best_model.pth')
 
-                # Early stopping (based on val R²)
                 if early_stopping(primary_metric):
                     print(f"\nEarly stopping at epoch {epoch}")
                     break
@@ -470,31 +474,21 @@ class Trainer:
 
         return self.history
 
-    def reset_optimizer(self, lr: float = None):
-        """Reset optimizer with new learning rate."""
-        if lr is None:
-            lr = self.train_config.finetune_lr
-        self.optimizer = get_optimizer(
-            self.model,
-            lr,
-            self.train_config.weight_decay
-        )
-        self.scheduler = get_scheduler(self.optimizer, self.train_config)
-
 
 @torch.no_grad()
-def evaluate(model, data_loader, device, normalize_on_gpu: bool = False):
-    """Evaluate model on a dataset (city-level mode)."""
+def evaluate_city_level(model, data_loader, device, normalize_on_gpu: bool = False):
+    """Evaluate multimodal BERT model on a dataset (city-level mode)."""
     model.eval()
     all_labels = []
     all_preds = []
     all_info = []
 
-    for patches, labels, info in tqdm(data_loader, desc="Evaluating"):
+    for patches, policy_feat, labels, info in tqdm(data_loader, desc="Evaluating"):
         patches = patches.to(device)
         if normalize_on_gpu:
-            patches = _gpu_normalize_standalone(patches)
-        outputs = model(patches)
+            patches = _gpu_normalize(patches)
+        policy_feat = policy_feat.to(device)
+        outputs = model(patches, policy_feat)
 
         all_labels.append(labels.numpy())
         all_preds.append(outputs.cpu().numpy())
@@ -512,62 +506,19 @@ def evaluate(model, data_loader, device, normalize_on_gpu: bool = False):
     return y_true, y_pred, metrics, all_info
 
 
-def _gpu_normalize_standalone(patches: torch.Tensor) -> torch.Tensor:
-    """
-    Standalone GPU normalize function for use outside Trainer class.
-
-    Args:
-        patches: (batch, 25, 64, 200, 200) for city-level
-                or (batch, 64, 200, 200) for patch-level
-
-    Returns:
-        Normalized patches with same shape
-    """
-    if patches.dim() == 5:
-        mean = patches.mean(dim=(-2, -1), keepdim=True)
-        std = patches.std(dim=(-2, -1), keepdim=True) + 1e-8
-    elif patches.dim() == 4:
-        mean = patches.mean(dim=(-2, -1), keepdim=True)
-        std = patches.std(dim=(-2, -1), keepdim=True) + 1e-8
-    else:
-        raise ValueError(f"Unexpected patches dimension: {patches.dim()}")
-    return (patches - mean) / std
-
-
 @torch.no_grad()
-def evaluate_patch_level(model, data_loader, device, num_patches: int = 25,
-                         normalize_on_gpu: bool = False, trim_ratio: float = 0.1):
-    """
-    Evaluate patch-level model with THREE aggregation methods simultaneously.
-
-    Collects predictions for all patches, groups by city-year, then aggregates
-    using mean, median, and trimmed_mean to get THREE sets of metrics.
-
-    Args:
-        model: The patch-level model
-        data_loader: DataLoader for patch-level evaluation
-        device: torch device
-        num_patches: Number of patches per city (default 25)
-        normalize_on_gpu: Whether to normalize on GPU
-        trim_ratio: Trim ratio for trimmed_mean aggregation (default 0.1)
-
-    Returns:
-        Dictionary: {
-            'mean': {'y_true', 'y_pred', 'metrics', 'sample_info'},
-            'median': {...},
-            'trimmed_mean': {...}
-        }
-    """
+def evaluate_patch_level(model, data_loader, device, num_patches: int = 25, normalize_on_gpu: bool = False, trim_ratio: float = 0.1):
+    """Evaluate patch-level model with THREE aggregation methods."""
     model.eval()
 
-    # Collect all predictions grouped by sample_idx (city-year)
-    sample_predictions = {}  # sample_idx -> {predictions, label, city, year}
+    sample_predictions = {}
 
-    for patches, labels, info in tqdm(data_loader, desc="Collecting predictions", leave=False):
+    for patches, policy_feat, labels, info in tqdm(data_loader, desc="Collecting predictions", leave=False):
         patches = patches.to(device)
         if normalize_on_gpu:
-            patches = _gpu_normalize_standalone(patches)
-        outputs = model(patches)
+            patches = _gpu_normalize(patches)
+        policy_feat = policy_feat.to(device)
+        outputs = model(patches, policy_feat)
 
         batch_size = patches.size(0)
         for i in range(batch_size):
@@ -584,7 +535,7 @@ def evaluate_patch_level(model, data_loader, device, num_patches: int = 25,
 
             sample_predictions[sample_idx]['predictions'][patch_idx] = outputs[i].item()
 
-    # Verify all samples have complete patches
+    # Verify completeness
     complete_samples = {}
     incomplete_count = 0
     for sample_idx, data in sample_predictions.items():
@@ -607,7 +558,6 @@ def evaluate_patch_level(model, data_loader, device, num_patches: int = 25,
     def aggregate_median(preds):
         return np.median(preds)
 
-    # Use trim_ratio from parameter (configurable via function argument)
     def aggregate_trimmed_mean(preds, tr=trim_ratio):
         sorted_preds = np.sort(preds)
         n = len(sorted_preds)
@@ -631,7 +581,6 @@ def evaluate_patch_level(model, data_loader, device, num_patches: int = 25,
 
         for sample_idx in sorted(complete_samples.keys()):
             data = complete_samples[sample_idx]
-            # Get predictions in order of patch_idx
             preds = [data['predictions'][p_idx] for p_idx in range(num_patches)]
             aggregated_pred = agg_func(preds)
 
@@ -656,38 +605,68 @@ def evaluate_patch_level(model, data_loader, device, num_patches: int = 25,
     return results
 
 
-def run_experiment(exp_name: str, gpu_id: int = 3, seed: int = config.RANDOM_SEED,
-                   normalize_on_gpu: bool = False):
-    """Run a single experiment.
+def run_bert_multimodal_experiment(
+    exp_name: str,
+    gpu_id: int = 0,
+    seed: int = config.RANDOM_SEED,
+    normalize_on_gpu: bool = False,
+    cache_dir: str = "policy_bert_cache",
+    no_wandb: bool = False
+):
+    """Run a single BERT multimodal experiment.
 
     Args:
         exp_name: Name of the experiment configuration
         gpu_id: GPU device ID to use
         seed: Random seed for reproducibility
         normalize_on_gpu: If True, perform normalization on GPU instead of CPU
+        cache_dir: BERT cache directory
+        no_wandb: If True, disable wandb logging
     """
     # Set GPU
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
 
     # Get config
-    exp_config = get_experiment_config(exp_name)
-    print_config(exp_config)
+    exp_config = get_bert_multimodal_experiment_config(exp_name)
 
-    # Create run_id that includes seed for unique identification
-    # This ensures checkpoints/results don't overwrite each other when using different seeds
+    # Override wandb setting
+    if no_wandb:
+        exp_config.wandb_enabled = False
+
+    print_bert_multimodal_config(exp_config)
+
+    # Create run_id
     if seed != config.RANDOM_SEED:
         run_id = f"{exp_name}_seed{seed}"
     else:
         run_id = exp_name
 
-    # Set seed for reproducibility
-    print(f"Setting random seed: {seed}")
+    # Get policy source config (needed for log directory)
+    policy_source_config = exp_config.model_config.policy_source
+    policy_source = policy_source_config.source
+
+    # Set seed
+    print(f"\nSetting random seed: {seed}")
     print(f"Run ID: {run_id}")
+    print(f"Policy source: {policy_source}")
+    if normalize_on_gpu:
+        print("[GPU Normalization ENABLED]")
     set_seed(seed)
 
-    # Setup logging
-    logger = setup_logging(run_id)
-    logger.info(f"Starting experiment: {exp_name} (run_id: {run_id}, seed: {seed})")
+    # Setup logging to dedicated subfolder based on policy source
+    # structured -> logs/Multimodal/, bert -> logs/MultimodalBert/, hybrid -> logs/MultimodalHybrid/
+    policy_source_to_dir = {
+        'structured': 'Multimodal',
+        'bert': 'MultimodalBert',
+        'hybrid': 'MultimodalHybrid'
+    }
+    log_subdir = policy_source_to_dir.get(policy_source, 'Multimodal')
+    log_dir = os.path.join(config.LOG_DIR, log_subdir)
+    os.makedirs(log_dir, exist_ok=True)
+    logger = setup_logging(run_id, log_dir=log_dir)
+    logger.info(f"Starting BERT multimodal experiment: {exp_name} (run_id: {run_id}, seed: {seed})")
+    logger.info(f"GPU Normalization: {normalize_on_gpu}")
+    logger.info(f"Policy source: {policy_source}, dim: {policy_source_config.policy_dim}")
 
     # Device
     device = get_device(exp_config.device)
@@ -698,13 +677,70 @@ def run_experiment(exp_name: str, gpu_id: int = 3, seed: int = config.RANDOM_SEE
     is_patch_level = (training_mode == "patch_level")
     logger.info(f"Training mode: {training_mode}")
 
-    # Load data
-    logger.info("Loading data...")
-    logger.info(f"Using seed {seed} for data splitting")
-    logger.info(f"GPU Normalization: {normalize_on_gpu}")
+    # ==========================================================================
+    # Load BERT Cache (if needed)
+    # ==========================================================================
+    bert_cache = None
+    if policy_source in ["bert", "hybrid"]:
+        logger.info(f"Loading BERT cache from {cache_dir}...")
+        bert_cache = get_policy_bert_cache(
+            cache_dir=cache_dir,
+            embedding_dim=policy_source_config.bert_dim
+        )
+        logger.info(f"BERT cache loaded: {bert_cache.embedding_dim}-dim, {len(bert_cache.embeddings)} entries")
+
+    # ==========================================================================
+    # Self-Supervised Pretraining (if enabled)
+    # ==========================================================================
+    encoder_state_dict = None
+    if exp_config.use_pretrain and exp_config.pretrain_config is not None:
+        pretrain_config = exp_config.pretrain_config
+        train_config = exp_config.train_config
+
+        logger.info(f"\n{'='*60}")
+        logger.info(f"Starting Self-Supervised Pretraining: {pretrain_config.name}")
+        logger.info(f"{'='*60}")
+
+        is_contrastive = (pretrain_config.name == "simclr")
+        pretrain_loader = get_pretrain_dataloader(
+            batch_size=train_config.batch_size,
+            num_workers=exp_config.num_workers,
+            contrastive=is_contrastive
+        )
+        logger.info(f"Pretrain loader created (contrastive={is_contrastive})")
+
+        if pretrain_config.name == "simclr":
+            encoder_state_dict = pretrain_simclr(
+                pretrain_loader=pretrain_loader,
+                simclr_config=pretrain_config,
+                train_config=train_config,
+                device=device,
+                logger=logger,
+                exp_name=run_id
+            )
+        elif pretrain_config.name == "mae":
+            encoder_state_dict = pretrain_mae(
+                pretrain_loader=pretrain_loader,
+                mae_config=pretrain_config,
+                train_config=train_config,
+                device=device,
+                logger=logger,
+                exp_name=run_id
+            )
+        else:
+            raise ValueError(f"Unknown pretrain method: {pretrain_config.name}")
+
+        logger.info(f"Pretraining completed. Encoder weights obtained.")
+        logger.info(f"{'='*60}\n")
+
+    # ==========================================================================
+    # Load Multimodal Data
+    # ==========================================================================
+    logger.info("Loading data with BERT policy features...")
     if is_patch_level:
-        # Patch-level training: each patch is an independent sample
-        train_loader, val_loader, test_loader, dataset_info = get_patch_level_dataloaders(
+        train_loader, val_loader, test_loader, dataset_info = get_patch_level_bert_policy_dataloaders(
+            policy_source=policy_source,
+            bert_cache=bert_cache,
             batch_size=exp_config.train_config.batch_size,
             num_workers=exp_config.num_workers,
             seed=seed,
@@ -713,8 +749,9 @@ def run_experiment(exp_name: str, gpu_id: int = 3, seed: int = config.RANDOM_SEE
         logger.info(f"Patch-level mode: {dataset_info['num_train_patches']} training patches "
                     f"from {dataset_info['num_train']} city-year samples")
     else:
-        # City-level training: 25 patches per sample, aggregated internally
-        train_loader, val_loader, test_loader, dataset_info = get_dataloaders(
+        train_loader, val_loader, test_loader, dataset_info = get_bert_policy_dataloaders(
+            policy_source=policy_source,
+            bert_cache=bert_cache,
             batch_size=exp_config.train_config.batch_size,
             num_workers=exp_config.num_workers,
             seed=seed,
@@ -724,69 +761,36 @@ def run_experiment(exp_name: str, gpu_id: int = 3, seed: int = config.RANDOM_SEE
     # Init wandb
     use_wandb = init_wandb(exp_config, dataset_info, seed, run_id)
 
-    # Create model
-    logger.info("Creating model...")
-    model = create_model(exp_config.model_config, patch_level=is_patch_level)
+    # ==========================================================================
+    # Create Multimodal Model
+    # ==========================================================================
+    logger.info("Creating multimodal BERT model...")
+    model = create_bert_multimodal_model(exp_config.model_config, patch_level=is_patch_level)
     logger.info(f"Model parameters: {count_parameters(model):,}")
 
-    # Self-supervised pretraining if needed
-    encoder_state_dict = None
-    if exp_config.use_pretrain and exp_config.pretrain_config:
-        pretrain_method = exp_config.pretrain_config.name
-        logger.info(f"Running self-supervised pretraining: {pretrain_method}")
+    # Load pretrained encoder weights (if available)
+    if encoder_state_dict is not None:
+        logger.info("Loading pretrained encoder weights into multimodal model...")
+        try:
+            model.load_encoder(encoder_state_dict)
+            logger.info("Pretrained encoder weights loaded successfully!")
 
-        # Get pretrain dataloader
-        pretrain_loader = get_pretrain_dataloader(
-            batch_size=exp_config.train_config.batch_size,
-            num_workers=exp_config.num_workers,
-            contrastive=(pretrain_method == "simclr")
-        )
-
-        if pretrain_method == "simclr":
-            encoder_state_dict = pretrain_simclr(
-                pretrain_loader,
-                exp_config.pretrain_config,
-                exp_config.train_config,
-                device,
-                logger,
-                exp_name=run_id  # Use run_id to include seed in checkpoint path
-            )
-            logger.info("SimCLR pretraining completed")
-
-        elif pretrain_method == "mae":
-            encoder_state_dict = pretrain_mae(
-                pretrain_loader,
-                exp_config.pretrain_config,
-                exp_config.train_config,
-                device,
-                logger,
-                exp_name=run_id  # Use run_id to include seed in checkpoint path
-            )
-            logger.info("MAE pretraining completed")
-
-        # Load pretrained encoder weights to downstream model
-        if encoder_state_dict is not None:
-            try:
-                model.load_encoder(encoder_state_dict)
-                logger.info("Successfully loaded pretrained encoder weights to downstream model")
-                print("=" * 60)
-                print("Pretrained encoder weights loaded successfully!")
-                print("=" * 60)
-            except Exception as e:
-                logger.error(f"Failed to load pretrained encoder: {e}")
-                print(f"Warning: Failed to load pretrained encoder: {e}")
-                print("Continuing with random initialization...")
-
-        # Freeze encoder for initial epochs if specified
-        if exp_config.train_config.freeze_encoder_epochs > 0:
-            model.freeze_encoder()
-            logger.info(f"Encoder frozen for first {exp_config.train_config.freeze_encoder_epochs} epochs")
+            freeze_epochs = exp_config.train_config.freeze_encoder_epochs
+            if freeze_epochs > 0:
+                logger.info(f"Will freeze encoder for first {freeze_epochs} epochs")
+        except Exception as e:
+            logger.warning(f"Failed to load pretrained weights: {e}")
+            logger.warning("Continuing with randomly initialized encoder...")
 
     # Move model to device
     model = model.to(device)
 
-    # Create trainer (with test_loader for overfitting monitoring)
-    trainer = Trainer(
+    # Create trainer
+    freeze_encoder_epochs = 0
+    if encoder_state_dict is not None:
+        freeze_encoder_epochs = exp_config.train_config.freeze_encoder_epochs
+
+    trainer = MultiModalBertTrainer(
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,
@@ -796,45 +800,36 @@ def run_experiment(exp_name: str, gpu_id: int = 3, seed: int = config.RANDOM_SEE
         use_wandb=use_wandb,
         test_loader=test_loader,
         is_patch_level=is_patch_level,
-        run_id=run_id,  # Use run_id for checkpoint saving
-        normalize_on_gpu=normalize_on_gpu
+        run_id=run_id,
+        normalize_on_gpu=normalize_on_gpu,
+        freeze_encoder_epochs=freeze_encoder_epochs
     )
 
-    # Train with frozen encoder first (if applicable)
-    if exp_config.use_pretrain and exp_config.train_config.freeze_encoder_epochs > 0:
-        logger.info(f"Phase 1: Training with frozen encoder for {exp_config.train_config.freeze_encoder_epochs} epochs")
-        trainer.train(exp_config.train_config.freeze_encoder_epochs)
+    # Train
+    history = trainer.train()
 
-        # Unfreeze and continue
-        model.unfreeze_encoder()
-        trainer.reset_optimizer(exp_config.train_config.finetune_lr)
-        logger.info("Phase 2: Encoder unfrozen, continuing training with full model")
-
-    # Full training (or continue training if encoder was frozen)
-    remaining_epochs = exp_config.train_config.num_epochs
-    if exp_config.use_pretrain and exp_config.train_config.freeze_encoder_epochs > 0:
-        remaining_epochs -= exp_config.train_config.freeze_encoder_epochs
-
-    if remaining_epochs > 0:
-        history = trainer.train(remaining_epochs)
-    else:
-        history = trainer.history
-
+    # ==========================================================================
     # Evaluate on test set
+    # ==========================================================================
     logger.info("\nEvaluating on test set...")
 
     if is_patch_level:
-        # Patch-level: evaluate with 3 aggregation methods on both val and test
         trim_ratio = exp_config.train_config.patch_level_trim_ratio
-        val_results = evaluate_patch_level(model, val_loader, device,
-                                           normalize_on_gpu=normalize_on_gpu,
-                                           trim_ratio=trim_ratio)
-        test_results = evaluate_patch_level(model, test_loader, device,
-                                            normalize_on_gpu=normalize_on_gpu,
-                                            trim_ratio=trim_ratio)
+        val_results = evaluate_patch_level(
+            model, val_loader, device,
+            normalize_on_gpu=normalize_on_gpu,
+            trim_ratio=trim_ratio
+        )
+        test_results = evaluate_patch_level(
+            model, test_loader, device,
+            normalize_on_gpu=normalize_on_gpu,
+            trim_ratio=trim_ratio
+        )
+
+        primary_agg = exp_config.train_config.patch_level_aggregation
 
         print("\n" + "=" * 60)
-        print("Final Results (Patch-Level with 3 Aggregation Methods)")
+        print(f"Final Results (BERT Multimodal Patch-Level, primary agg: {primary_agg})")
         print("=" * 60)
 
         print("\nValidation Set:")
@@ -861,17 +856,18 @@ def run_experiment(exp_name: str, gpu_id: int = 3, seed: int = config.RANDOM_SEE
             wandb.run.summary["best_epoch"] = trainer.best_epoch
             wandb.finish()
 
-        # Save results with all 6 combinations
+        # Save results
         results = {
             'exp_name': exp_name,
             'seed': seed,
             'history': history,
             'training_mode': training_mode,
+            'policy_source': policy_source,
+            'policy_dim': policy_source_config.policy_dim,
             'best_epoch': trainer.best_epoch,
             'model_params': count_parameters(model),
-            'use_pretrain': exp_config.use_pretrain,
-            'pretrain_method': exp_config.pretrain_config.name if exp_config.pretrain_config else None,
-            # All 6 combinations of results
+            'fusion_type': exp_config.model_config.fusion_type,
+            'image_encoder': exp_config.model_config.image_encoder_type,
             'val_results': {
                 agg: {
                     'metrics': val_results[agg]['metrics'],
@@ -891,15 +887,13 @@ def run_experiment(exp_name: str, gpu_id: int = 3, seed: int = config.RANDOM_SEE
         }
 
     else:
-        # City-level: evaluate using model's built-in aggregation ONLY
-        # Training and evaluation use the SAME aggregation method
-        val_y_true, val_y_pred, val_metrics, val_info = evaluate(model, val_loader, device,
-                                                                  normalize_on_gpu=normalize_on_gpu)
-        test_y_true, test_y_pred, test_metrics, test_info = evaluate(model, test_loader, device,
-                                                                      normalize_on_gpu=normalize_on_gpu)
+        # City-level
+        val_y_true, val_y_pred, val_metrics, val_info = evaluate_city_level(model, val_loader, device, normalize_on_gpu=normalize_on_gpu)
+        test_y_true, test_y_pred, test_metrics, test_info = evaluate_city_level(model, test_loader, device, normalize_on_gpu=normalize_on_gpu)
 
         print("\n" + "=" * 60)
-        print(f"Final Results (City-Level, aggregation: {exp_config.model_config.aggregation})")
+        print(f"Final Results (BERT Multimodal City-Level, fusion: {exp_config.model_config.fusion_type})")
+        print(f"Policy Source: {policy_source} ({policy_source_config.policy_dim}-dim)")
         print("=" * 60)
 
         print(f"\nValidation Set:")
@@ -925,10 +919,12 @@ def run_experiment(exp_name: str, gpu_id: int = 3, seed: int = config.RANDOM_SEE
             'seed': seed,
             'history': history,
             'training_mode': training_mode,
+            'policy_source': policy_source,
+            'policy_dim': policy_source_config.policy_dim,
             'best_epoch': trainer.best_epoch,
             'model_params': count_parameters(model),
-            'use_pretrain': exp_config.use_pretrain,
-            'pretrain_method': exp_config.pretrain_config.name if exp_config.pretrain_config else None,
+            'fusion_type': exp_config.model_config.fusion_type,
+            'image_encoder': exp_config.model_config.image_encoder_type,
             'model_aggregation': exp_config.model_config.aggregation,
             'val_metrics': val_metrics,
             'val_y_true': val_y_true,
@@ -940,7 +936,15 @@ def run_experiment(exp_name: str, gpu_id: int = 3, seed: int = config.RANDOM_SEE
             'test_info': test_info
         }
 
-    result_dir = os.path.join(config.RESULT_DIR, 'Baseline')
+    # Save results to dedicated subfolder based on policy source
+    # structured -> Multimodal/, bert -> MultimodalBert/, hybrid -> MultimodalHybrid/
+    policy_source_to_dir = {
+        'structured': 'Multimodal',
+        'bert': 'MultimodalBert',
+        'hybrid': 'MultimodalHybrid'
+    }
+    result_subdir = policy_source_to_dir.get(policy_source, 'Multimodal')
+    result_dir = os.path.join(config.RESULT_DIR, result_subdir)
     os.makedirs(result_dir, exist_ok=True)
     results_path = os.path.join(result_dir, f'{run_id}_results.pkl')
     with open(results_path, 'wb') as f:
@@ -951,17 +955,28 @@ def run_experiment(exp_name: str, gpu_id: int = 3, seed: int = config.RANDOM_SEE
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run pretrain experiments")
+    parser = argparse.ArgumentParser(description="Run BERT multimodal experiments")
     parser.add_argument('--exp', type=str, required=True,
-                        help=f"Experiment name. Available: {list(config.EXPERIMENTS.keys())}")
-    parser.add_argument('--gpu', type=int, default=3, help="GPU ID to use")
+                        help=f"Experiment name. Available: {list(BERT_MULTIMODAL_EXPERIMENTS.keys())}")
+    parser.add_argument('--gpu', type=int, default=0, help="GPU ID to use")
     parser.add_argument('--seed', type=int, default=config.RANDOM_SEED,
                         help=f"Random seed for reproducibility (default: {config.RANDOM_SEED})")
     parser.add_argument('--normalize_on_gpu', action='store_true',
-                        help="Perform normalization on GPU instead of CPU (faster)")
+                        help="Perform normalization on GPU instead of CPU (improves training speed)")
+    parser.add_argument('--cache-dir', type=str, default='policy_bert_cache',
+                        help="BERT cache directory")
+    parser.add_argument('--no-wandb', action='store_true',
+                        help="Disable wandb logging")
     args = parser.parse_args()
 
-    run_experiment(args.exp, args.gpu, args.seed, normalize_on_gpu=args.normalize_on_gpu)
+    run_bert_multimodal_experiment(
+        args.exp,
+        args.gpu,
+        args.seed,
+        normalize_on_gpu=args.normalize_on_gpu,
+        cache_dir=args.cache_dir,
+        no_wandb=args.no_wandb
+    )
 
 
 if __name__ == "__main__":

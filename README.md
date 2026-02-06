@@ -2,7 +2,9 @@
 
 基于 Alpha Earth 卫星嵌入数据的人口自然增长率预测实验框架。
 
-本项目比较了不同模型架构（MLP、LightCNN、ResNet、**Multimodal**）和不同预训练策略（无预训练、SimCLR、MAE、ImageNet）对人口增长率预测性能的影响。
+本项目比较了不同模型架构（MLP、LightCNN、ResNet、**Multimodal**、**Multimodal-BERT**）和不同预训练策略（无预训练、SimCLR、MAE、ImageNet）对人口增长率预测性能的影响。
+
+**v3.3 新增**: BERT 政策文本嵌入系统（chinese-roberta-wwm-ext），支持三种政策来源（structured/bert/hybrid）；预训练数据提取与瓦片补全管线；消融实验脚本。
 
 **v3.2 新增**: 多模态模型支持自监督预训练（SimCLR/MAE）和位置感知聚合（Transformer），大幅扩展实验配置。
 
@@ -13,17 +15,27 @@
 ```
 Baseline_Pretrain/
 ├── config.py                      # 基础配置（路径、模型、训练参数、实验预设）
-├── config_multimodal.py           # 多模态实验配置 [NEW]
-├── dataset.py                     # 基础数据集类和数据加载器
-├── dataset_policy.py              # 带政策特征的数据集（支持GPU归一化）[NEW]
-├── train.py                       # 基础模型训练脚本
-├── train_multimodal.py            # 多模态模型训练脚本（支持GPU归一化）[NEW]
+├── config_multimodal.py           # 多模态实验配置
+├── config_multimodal_bert.py      # BERT 多模态实验配置 [NEW v3.3]
+├── dataset.py                     # 基础数据集类和数据加载器（支持GPU归一化）
+├── dataset_policy.py              # 带政策特征的数据集（支持GPU归一化）
+├── dataset_policy_bert.py         # BERT 政策嵌入数据集 [NEW v3.3]
+├── train.py                       # 基础模型训练脚本（支持GPU归一化）
+├── train_multimodal.py            # 多模态模型训练脚本（支持GPU归一化）
+├── train_multimodal_bert.py       # BERT 多模态模型训练脚本 [NEW v3.3]
 ├── evaluate.py                    # 模型评估脚本
-├── compare_results.py             # 实验结果对比分析
+├── compare_results.py             # 实验结果对比分析（支持子目录递归搜索）
 ├── utils.py                       # 工具函数（指标计算、日志、检查点等）
-├── policy_features.py             # 政策特征提取模块 [NEW]
-├── verify_policy_data.py          # 政策数据验证脚本 [NEW]
-├── verify_gpu_normalization.py    # GPU归一化验证脚本 [NEW]
+├── policy_features.py             # 政策特征提取模块
+├── policy_bert.py                 # BERT 政策文本嵌入模块 [NEW v3.3]
+├── build_policy_bert_cache.py     # BERT 嵌入缓存构建工具 [NEW v3.3]
+├── pretrain_data_extractor.py     # 预训练数据提取（TIFF → 城市切片）[NEW v3.3]
+├── step1_find_missing_tiles.py    # 查找缺失瓦片 [NEW v3.3]
+├── step2_download_missing_tiles.py # 下载缺失瓦片 [NEW v3.3]
+├── run_extraction.py              # 非交互式数据提取 [NEW v3.3]
+├── run_download_missing.py        # 缺失瓦片下载与提取流程 [NEW v3.3]
+├── verify_policy_data.py          # 政策数据验证脚本
+├── verify_gpu_normalization.py    # GPU归一化验证脚本
 ├── preprocess_patches.py          # 数据预处理：TIFF → 25个patch的npy文件
 ├── preprocess_individual_patches.py  # 数据预处理：TIFF → 25个独立patch文件
 ├── requirements.txt               # 项目依赖
@@ -33,7 +45,8 @@ Baseline_Pretrain/
 │   ├── light_cnn.py               # 轻量级 CNN 模型
 │   ├── resnet_baseline.py         # ResNet 基线模型
 │   ├── aggregators.py             # 位置感知聚合模块
-│   └── multimodal.py              # 多模态融合模型 [NEW]
+│   ├── multimodal.py              # 多模态融合模型
+│   └── multimodal_bert.py         # BERT 多模态模型工厂 [NEW v3.3]
 ├── pretrain/
 │   ├── __init__.py
 │   ├── simclr.py                  # SimCLR 对比学习预训练
@@ -47,17 +60,25 @@ Baseline_Pretrain/
 │   ├── patch_level/               # Patch-level 实验脚本
 │   │   ├── run_patch_experiments.sh     # Patch-level 批量实验
 │   │   └── run_patch_level.sh           # Patch-level 单实验
-│   ├── multimodal/                # 多模态实验脚本 [NEW]
-│   │   ├── run_mm_simple.sh             # 多模态 tmux 管理脚本（重构）
-│   │   ├── run_mm_simple_gpu.sh         # 多模态 GPU 归一化版本 [NEW]
+│   ├── multimodal/                # 多模态实验脚本
+│   │   ├── run_mm_simple.sh             # 多模态 tmux 管理脚本
+│   │   ├── run_mm_simple_gpu.sh         # 多模态 GPU 归一化版本
 │   │   ├── run_mm_tmux.sh               # 多模态 tmux 管理脚本
 │   │   ├── run_multimodal_experiments.sh  # 多模态批量实验
 │   │   └── run_multimodal_queue.sh      # 多模态队列运行
+│   ├── multimodal_bert/           # BERT 多模态实验脚本 [NEW v3.3]
+│   │   └── run_unified_multimodal_gpu.sh  # BERT 多模态 GPU 调度脚本
+│   ├── ablation/                  # 消融实验脚本 [NEW v3.3]
+│   │   ├── run_single_vs_multimodal.sh  # 单模态 vs 多模态消融
+│   │   └── run_policy_ablation.sh       # 政策来源消融（Structured/BERT/Hybrid）
 │   └── utils/                     # 工具脚本
 │       └── start_experiments.sh         # tmux 启动实验
 ├── checkpoints/                   # 模型检查点 (gitignore)
 ├── logs/                          # 训练日志 (gitignore)
-├── results/                       # 实验结果 (*.pkl gitignore)
+├── results/                       # 实验结果 (gitignore)
+│   ├── Baseline/                  # 基础模型结果
+│   ├── MultimodalBert/            # BERT 多模态结果 [NEW v3.3]
+│   └── MultimodalHybrid/          # Hybrid 多模态结果 [NEW v3.3]
 └── wandb/                         # Wandb 日志 (gitignore)
 ```
 
@@ -184,6 +205,29 @@ python train_multimodal.py --exp mm_resnet101_concat --gpu 3
 
 # 启用 GPU 归一化加速训练
 python train_multimodal.py --exp mm_cnn_concat --gpu 3 --normalize_on_gpu
+
+# ============================================
+# BERT 政策嵌入多模态实验 [NEW v3.3]
+# ============================================
+
+# 步骤 1: 构建 BERT 嵌入缓存（只需运行一次）
+python build_policy_bert_cache.py --from-collected \
+    --input data_local/Fertility_Policy/policy_full_texts_collected.json \
+    --output data_local/Fertility_Policy/policy_bert_cache.pkl
+
+# 步骤 2: 运行 BERT 多模态实验
+python train_multimodal_bert.py --exp bert_mm_cnn_concat --gpu 3
+
+# 不同政策来源
+python train_multimodal_bert.py --exp bert_mm_cnn_concat --gpu 3       # BERT (64维)
+python train_multimodal_bert.py --exp hybrid_mm_cnn_concat --gpu 3     # Hybrid (76维 = BERT + 结构化)
+python train_multimodal_bert.py --exp struct_mm_cnn_concat --gpu 3     # 结构化 (12维)
+
+# 启用 GPU 归一化
+python train_multimodal_bert.py --exp bert_mm_cnn_concat --gpu 3 --normalize_on_gpu
+
+# 基线模型也支持 GPU 归一化 [NEW v3.3]
+python train.py --exp mlp_baseline --gpu 3 --normalize_on_gpu
 ```
 
 ### 4. 验证政策数据（可选）
@@ -257,6 +301,58 @@ python compare_results.py
 
 **时间滞后机制**: 为防止数据泄露，预测第 Y 年的人口增长率时，使用第 Y-1 年的政策特征（默认 lag=1）。
 
+### BERT 政策嵌入 [NEW v3.3]
+
+使用中文预训练 BERT（`hfl/chinese-roberta-wwm-ext`）对生育政策原文进行语义编码，生成 64 维密集嵌入向量。
+
+**三种政策来源**:
+
+| 来源 | 维度 | 说明 |
+|------|------|------|
+| `structured` | 12 | 结构化特征（与 v3.0 相同） |
+| `bert` | 64 | BERT 编码政策原文 |
+| `hybrid` | 76 | BERT (64维) + 结构化 (12维) 拼接 |
+
+**BERT 编码流程**:
+
+1. **关键条款提取**: `KeyArticleExtractor` 使用 30+ 中文关键词筛选政策文本中的生育相关条款
+2. **分块编码**: 支持 mean/max/hierarchical/attention 四种分块策略处理长文本
+3. **多文档聚合**: `MultiDocumentPolicyEncoder` 聚合同一省份-年份的多份政策文档
+4. **缓存机制**: `PolicyEmbeddingCache` 预计算所有嵌入并缓存为 pickle 文件，训练时直接加载
+
+**缓存构建**:
+
+```bash
+# 从收集的政策全文构建缓存
+python build_policy_bert_cache.py --from-collected \
+    --input data_local/Fertility_Policy/policy_full_texts_collected.json
+
+# 自定义参数
+python build_policy_bert_cache.py --from-collected \
+    --model hfl/chinese-roberta-wwm-ext \
+    --dim 64 \
+    --chunk-strategy mean
+```
+
+### 预训练数据提取 [NEW v3.3]
+
+从 AEF 卫星 TIFF 瓦片中提取 333 个中国地级市的 10km×10km 区域数据。
+
+**提取流程**:
+
+```bash
+# 完整流程（查找缺失瓦片 → 下载 → 提取）
+python run_download_missing.py
+
+# 分步执行
+python run_download_missing.py --step 1   # 查找缺失瓦片
+python run_download_missing.py --step 2   # 下载瓦片
+python run_download_missing.py --step 3   # 提取城市数据
+
+# 单独运行提取
+python run_extraction.py
+```
+
 ---
 
 ## 训练模式
@@ -318,11 +414,32 @@ python compare_results.py
 
 **适用实验**: `mm_cnn_*`, `mm_mlp_*`, `mm_resnet*_*`
 
+### BERT 多模态训练 [NEW v3.3]
+
+BERT 多模态模型使用 BERT 编码的政策文本嵌入替代（或增强）结构化政策特征：
+
+```
+训练: 输入 image(batch, 25, 64, 200, 200) + policy(batch, D)
+      → 图像编码器 → 聚合 → 融合层 → 回归头 → 输出 (batch, 1)
+      其中 D = 64 (bert) / 76 (hybrid) / 12 (structured)
+```
+
+**三种政策来源配置**:
+| 来源 | policy_dim | 说明 |
+|------|-----------|------|
+| `bert` | 64 | BERT 嵌入（需预构建缓存） |
+| `hybrid` | 76 | BERT 64维 + 结构化 12维 |
+| `structured` | 12 | 与原始多模态相同 |
+
+**训练脚本**: `train_multimodal_bert.py`
+
+**适用实验**: `bert_mm_*`, `hybrid_mm_*`, `struct_mm_*`
+
 ---
 
 ## 实验总览
 
-当前共有 **约 155 个实验配置**（基础模型 80 + 多模态 ~75），按模型类型组织如下：
+当前共有 **约 305 个实验配置**（基础模型 80 + 多模态 ~75 + BERT 多模态 ~150），按模型类型组织如下：
 
 ### 基础模型实验（80 个）
 
@@ -638,6 +755,53 @@ python compare_results.py
 > - 使用时间滞后（lag=1）防止数据泄露
 > - **新增**：自监督预训练支持自动编码器冻结 (`freeze_encoder_epochs`)
 
+### BERT 多模态实验（~150 个）[v3.3 新增]
+
+BERT 多模态实验在 `config_multimodal_bert.py` 中定义，三种政策来源 × 所有组合：
+
+| 类别 | 描述 | 每种来源实验数 | 总计（×3）|
+|------|------|---------------|-----------|
+| **基础多模态** | LightCNN/MLP/ResNet + 4种融合策略 | ~21 | ~63 |
+| **位置感知聚合** | Transformer/2D Transformer 聚合 | ~12 | ~36 |
+| **SimCLR 预训练** | 对比学习 + BERT 多模态微调 | ~10 | ~30 |
+| **MAE 预训练** | 掩码自编码器 + BERT 多模态微调 | ~8 | ~24 |
+| **ResNet 深度扩展** | ResNet10/34/50/101 变体 | ~11 | ~33 |
+| **Patch-level** | 包含预训练的 Patch-level 实验 | ~6 | ~18 |
+
+**实验命名规则**:
+
+| 前缀 | 政策来源 | policy_dim | 结果目录 |
+|------|---------|-----------|---------|
+| `bert_mm_*` | BERT 嵌入 | 64 | `results/MultimodalBert/` |
+| `hybrid_mm_*` | BERT + 结构化 | 76 | `results/MultimodalHybrid/` |
+| `struct_mm_*` | 结构化 | 12 | `results/MultimodalBert/` |
+
+**示例实验**:
+
+| 实验名称 | 政策来源 | 图像编码器 | 融合策略 | 聚合方式 |
+|---------|---------|-----------|----------|----------|
+| `bert_mm_cnn_concat` | bert | LightCNN | concat | mean |
+| `bert_mm_cnn_gated` | bert | LightCNN | gated | mean |
+| `bert_mm_simclr_cnn_concat` | bert | LightCNN(SimCLR) | concat | mean |
+| `hybrid_mm_cnn_concat` | hybrid | LightCNN | concat | mean |
+| `hybrid_mm_cnn_concat_transformer` | hybrid | LightCNN | concat | transformer |
+| `struct_mm_resnet18_concat` | structured | ResNet18 | concat | mean |
+
+> **BERT 多模态特点**：
+> - 政策特征维度：64 维（bert）、76 维（hybrid）、12 维（structured）
+> - 需要预构建 BERT 嵌入缓存（`build_policy_bert_cache.py`）
+> - 训练脚本 `train_multimodal_bert.py` 独立于 `train_multimodal.py`
+> - 结果按政策来源保存到不同子目录
+
+### 消融实验 [v3.3 新增]
+
+专门的消融实验脚本用于系统性比较：
+
+| 脚本 | 比较维度 | 说明 |
+|------|---------|------|
+| `scripts/ablation/run_single_vs_multimodal.sh` | 单模态 vs 多模态 | 验证政策特征的增益 |
+| `scripts/ablation/run_policy_ablation.sh` | Structured vs BERT vs Hybrid | 比较三种政策来源的效果 |
+
 ---
 
 ## 模型架构
@@ -743,6 +907,35 @@ python compare_results.py
 | `get_encoder()` | 获取图像编码器（用于预训练） |
 
 **参数量**: ~180K（LightCNN + concat 融合），~580K（LightCNN + transformer 聚合）
+
+### BERT Policy Encoder (`policy_bert.py`) [NEW v3.3]
+
+```
+政策原文 (多份文档)
+    ↓ KeyArticleExtractor（关键词筛选）
+关键条款文本
+    ↓ chinese-roberta-wwm-ext（分块编码）
+    ↓ Chunk Strategy (mean/max/hierarchical/attention)
+文档嵌入 (768,)
+    ↓ MultiDocumentPolicyEncoder（多文档聚合）
+    ↓ 线性投影 768 → 64
+政策嵌入 (64,)
+    ↓ PolicyEmbeddingCache（预计算缓存）
+    ↓ 训练时直接加载
+```
+
+**关键组件**:
+
+| 组件 | 说明 |
+|------|------|
+| `KeyArticleExtractor` | 30+ 关键词筛选生育相关条款 |
+| `PolicyBertEncoder` | BERT 编码 + 分块聚合 |
+| `MultiDocumentPolicyEncoder` | 多文档 → 单一嵌入 |
+| `PolicyEmbeddingCache` | 预计算缓存，支持维度验证 |
+
+### BERT Multimodal Model (`models/multimodal_bert.py`) [NEW v3.3]
+
+基于 `models/multimodal.py` 的多模态模型，通过 `create_bert_multimodal_model()` 工厂函数创建，自动适配不同政策维度（12/64/76）。
 
 ---
 
@@ -917,6 +1110,8 @@ python train.py --exp <experiment_name> --gpu <gpu_id> [--seed <random_seed>]
 | `scripts/baseline/` | 基础模型实验脚本 |
 | `scripts/patch_level/` | Patch-level 实验脚本 |
 | `scripts/multimodal/` | 多模态实验脚本 |
+| `scripts/multimodal_bert/` | BERT 多模态实验脚本 [NEW v3.3] |
+| `scripts/ablation/` | 消融实验脚本 [NEW v3.3] |
 | `scripts/utils/` | 工具脚本 |
 
 #### 基础模型批量运行 (`scripts/baseline/run_simple.sh`)
@@ -1083,6 +1278,7 @@ python compare_results.py
 ```
 torch>=2.0.0
 torchvision>=0.15.0
+transformers>=4.30.0           # [NEW v3.3] BERT 政策文本编码
 numpy>=1.24.0
 pandas>=2.0.0
 scipy>=1.10.0
@@ -1092,11 +1288,73 @@ tqdm>=4.65.0
 rasterio>=1.3.0
 openpyxl>=3.1.0
 wandb>=0.15.0
+requests>=2.28.0               # [NEW v3.3] 瓦片下载
 ```
 
 ---
 
 ## 更新日志
+
+### v3.3 (2026-02-06)
+
+**重大更新：BERT 政策文本嵌入系统、预训练数据管线、消融实验**
+
+#### BERT 政策嵌入系统
+
+使用中文 BERT（`hfl/chinese-roberta-wwm-ext`）编码生育政策原文，生成语义丰富的 64 维嵌入向量：
+
+- **`policy_bert.py`**: BERT 政策编码核心模块
+  - `KeyArticleExtractor`: 30+ 关键词筛选生育相关条款
+  - `PolicyBertEncoder`: BERT 编码 + 4 种分块策略（mean/max/hierarchical/attention）
+  - `MultiDocumentPolicyEncoder`: 多文档聚合为单一省份-年份嵌入
+  - `PolicyEmbeddingCache`: 预计算缓存系统，支持维度验证和时间滞后（lag=1）
+- **`build_policy_bert_cache.py`**: 缓存构建工具
+  - 支持两种 JSON 格式输入（收集版 / 结构化版）
+  - 自动检测 JSON 格式并加载
+- **三种政策来源**: structured（12维）、bert（64维）、hybrid（76维 = bert + structured）
+
+#### BERT 多模态训练系统
+
+- **`config_multimodal_bert.py`**: ~150 个 BERT 多模态实验配置
+  - `PolicySourceConfig`: 政策来源配置（自动计算 policy_dim）
+  - `MultiModalBertConfig` / `MultiModalBertExperimentConfig`: 扩展实验配置
+  - `BERT_MULTIMODAL_EXPERIMENTS`: 三种政策来源 × 所有编码器/融合/聚合组合
+- **`dataset_policy_bert.py`**: BERT 政策嵌入数据集
+  - `CityPolicyBertDataset` / `PatchLevelPolicyBertDataset`
+  - `_get_policy_features()`: 根据政策来源返回对应维度的特征
+- **`models/multimodal_bert.py`**: 模型工厂，自动适配政策维度
+- **`train_multimodal_bert.py`**: 完整训练流程
+  - 支持缓存加载 → 可选预训练 → 数据加载 → 训练 → 评估 → 结果保存
+  - 结果按政策来源保存到 `results/MultimodalBert/` 或 `results/MultimodalHybrid/`
+
+#### 预训练数据提取管线
+
+- **`pretrain_data_extractor.py`**: 从 AEF TIFF 瓦片提取 333 个城市的 10km×10km 区域
+  - WGS84 ↔ UTM 坐标转换
+  - TIFF 索引构建与窗口提取
+  - 自动边缘填充处理
+- **`step1_find_missing_tiles.py`**: 从 AEF 索引查找缺失城市的对应瓦片
+- **`step2_download_missing_tiles.py`**: 批量下载缺失瓦片（支持重试和断点续传）
+- **`run_extraction.py`** / **`run_download_missing.py`**: 流程编排脚本
+
+#### 消融实验脚本
+
+- **`scripts/ablation/run_single_vs_multimodal.sh`**: 单模态 vs 多模态消融
+- **`scripts/ablation/run_policy_ablation.sh`**: Structured vs BERT vs Hybrid 政策来源消融
+- **`scripts/multimodal_bert/run_unified_multimodal_gpu.sh`**: BERT 多模态 GPU 调度脚本
+
+#### 基线模型增强
+
+- **`train.py`**: 新增 GPU 归一化支持（`--normalize_on_gpu`）、结果保存到 `results/Baseline/` 子目录
+- **`dataset.py`**: 新增 `normalize_on_gpu` 参数，所有数据路径支持跳过 CPU 归一化
+- **`compare_results.py`**: glob 模式改为 `**/*_results.pkl`，支持递归搜索子目录
+
+#### 实验数量
+
+- **新增 BERT 多模态实验**: ~150 个（三种政策来源 × ~50 种组合）
+- **总实验配置**: ~155 → ~305
+
+---
 
 ### v3.2 (2026-01-29)
 

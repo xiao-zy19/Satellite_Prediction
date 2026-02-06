@@ -19,7 +19,7 @@ def load_all_results():
     results = {}
     result_dir = Path(config.RESULT_DIR)
 
-    for pkl_file in result_dir.glob("*_results.pkl"):
+    for pkl_file in result_dir.glob("**/*_results.pkl"):
         exp_name = pkl_file.stem.replace("_results", "")
         try:
             with open(pkl_file, 'rb') as f:

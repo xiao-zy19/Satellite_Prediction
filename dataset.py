@@ -30,7 +30,8 @@ class CityDataset(Dataset):
         augment: bool = False,
         return_raw: bool = False,
         contrastive: bool = False,
-        use_preprocessed: bool = True
+        use_preprocessed: bool = True,
+        normalize_on_gpu: bool = False
     ):
         """
         Args:
@@ -41,6 +42,7 @@ class CityDataset(Dataset):
             return_raw: Return raw data without patch extraction (for MAE)
             contrastive: Return two augmented views (for SimCLR)
             use_preprocessed: Use preprocessed npy files if available
+            normalize_on_gpu: If True, skip CPU normalization (will be done on GPU during training)
         """
         self.samples = samples
         self.patch_size = patch_size
@@ -49,6 +51,7 @@ class CityDataset(Dataset):
         self.return_raw = return_raw
         self.contrastive = contrastive
         self.use_preprocessed = use_preprocessed and config.USE_PREPROCESSED_PATCHES
+        self.normalize_on_gpu = normalize_on_gpu
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -83,15 +86,17 @@ class CityDataset(Dataset):
 
         if self.return_raw:
             patches = torch.FloatTensor(patches)
-            patches = self._normalize_tensor(patches)
+            if not self.normalize_on_gpu:
+                patches = self._normalize_tensor(patches)
         else:
             if self.contrastive:
                 view1 = self._augment_patches(patches.copy())
                 view2 = self._augment_patches(patches.copy())
                 view1 = torch.FloatTensor(view1)
                 view2 = torch.FloatTensor(view2)
-                view1 = self._normalize_tensor(view1)
-                view2 = self._normalize_tensor(view2)
+                if not self.normalize_on_gpu:
+                    view1 = self._normalize_tensor(view1)
+                    view2 = self._normalize_tensor(view2)
 
                 return view1, view2, {
                     'city': sample['city'],
@@ -103,7 +108,8 @@ class CityDataset(Dataset):
                 patches = self._augment_patches(patches)
 
             patches = torch.FloatTensor(patches)
-            patches = self._normalize_tensor(patches)
+            if not self.normalize_on_gpu:
+                patches = self._normalize_tensor(patches)
 
         label = torch.FloatTensor([sample['growth_rate']])
 
@@ -311,7 +317,8 @@ class PatchLevelDataset(Dataset):
         patch_size: int = config.PATCH_SIZE_PIXELS,
         num_patches_per_dim: int = config.NUM_PATCHES_PER_DIM,
         augment: bool = False,
-        use_preprocessed: bool = True
+        use_preprocessed: bool = True,
+        normalize_on_gpu: bool = False
     ):
         """
         Args:
@@ -320,6 +327,7 @@ class PatchLevelDataset(Dataset):
             num_patches_per_dim: Number of patches per dimension
             augment: Whether to apply data augmentation
             use_preprocessed: Use preprocessed npy files if available
+            normalize_on_gpu: If True, skip CPU normalization (will be done on GPU during training)
         """
         self.samples = samples
         self.patch_size = patch_size
@@ -327,6 +335,7 @@ class PatchLevelDataset(Dataset):
         self.num_patches_total = num_patches_per_dim ** 2
         self.augment = augment
         self.use_preprocessed = use_preprocessed and config.USE_PREPROCESSED_PATCHES
+        self.normalize_on_gpu = normalize_on_gpu
 
         # Build index mapping: global_idx -> (sample_idx, patch_idx)
         self.index_mapping = []
@@ -395,7 +404,8 @@ class PatchLevelDataset(Dataset):
             patch = self._augment_patch(patch)
 
         patch = torch.FloatTensor(patch)
-        patch = self._normalize_tensor(patch)
+        if not self.normalize_on_gpu:
+            patch = self._normalize_tensor(patch)
 
         label = torch.FloatTensor([sample['growth_rate']])
 
@@ -635,7 +645,8 @@ def get_dataloaders(
     num_workers: int = 4,
     augment_train: bool = True,
     contrastive: bool = False,
-    seed: int = config.RANDOM_SEED
+    seed: int = config.RANDOM_SEED,
+    normalize_on_gpu: bool = False
 ) -> Tuple[DataLoader, DataLoader, DataLoader, Dict]:
     """Create train, validation, and test dataloaders.
 
@@ -645,6 +656,7 @@ def get_dataloaders(
         augment_train: Whether to apply data augmentation on training data
         contrastive: Whether to return contrastive pairs (for SimCLR)
         seed: Random seed for reproducible data splitting
+        normalize_on_gpu: If True, skip CPU normalization (will be done on GPU during training)
 
     Returns:
         train_loader, val_loader, test_loader, dataset_info
@@ -667,10 +679,13 @@ def get_dataloaders(
     print(f"  Test: {len(test_samples)} samples")
 
     train_dataset = CityDataset(
-        train_samples, augment=augment_train, contrastive=contrastive
+        train_samples, augment=augment_train, contrastive=contrastive,
+        normalize_on_gpu=normalize_on_gpu
     )
-    val_dataset = CityDataset(val_samples, augment=False, contrastive=False)
-    test_dataset = CityDataset(test_samples, augment=False, contrastive=False)
+    val_dataset = CityDataset(val_samples, augment=False, contrastive=False,
+                               normalize_on_gpu=normalize_on_gpu)
+    test_dataset = CityDataset(test_samples, augment=False, contrastive=False,
+                                normalize_on_gpu=normalize_on_gpu)
 
     # Create generator for reproducible shuffling
     g = torch.Generator()
@@ -745,7 +760,8 @@ def get_patch_level_dataloaders(
     batch_size: int = 64,
     num_workers: int = 4,
     augment_train: bool = True,
-    seed: int = config.RANDOM_SEED
+    seed: int = config.RANDOM_SEED,
+    normalize_on_gpu: bool = False
 ) -> Tuple[DataLoader, DataLoader, DataLoader, Dict]:
     """
     Create patch-level dataloaders where each patch is an independent sample.
@@ -759,6 +775,7 @@ def get_patch_level_dataloaders(
         num_workers: Number of worker processes for data loading
         augment_train: Whether to apply data augmentation on training data
         seed: Random seed for reproducible data splitting
+        normalize_on_gpu: If True, skip CPU normalization (will be done on GPU during training)
 
     Returns:
         train_loader, val_loader, test_loader, dataset_info
@@ -781,9 +798,12 @@ def get_patch_level_dataloaders(
     print(f"  Test: {len(test_samples)} city-years -> {len(test_samples) * config.NUM_PATCHES_TOTAL} patches")
 
     # Use PatchLevelDataset for training
-    train_dataset = PatchLevelDataset(train_samples, augment=augment_train)
-    val_dataset = PatchLevelDataset(val_samples, augment=False)
-    test_dataset = PatchLevelDataset(test_samples, augment=False)
+    train_dataset = PatchLevelDataset(train_samples, augment=augment_train,
+                                       normalize_on_gpu=normalize_on_gpu)
+    val_dataset = PatchLevelDataset(val_samples, augment=False,
+                                     normalize_on_gpu=normalize_on_gpu)
+    test_dataset = PatchLevelDataset(test_samples, augment=False,
+                                      normalize_on_gpu=normalize_on_gpu)
 
     # Create generator for reproducible shuffling
     g = torch.Generator()

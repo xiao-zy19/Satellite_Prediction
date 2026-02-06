@@ -40,3 +40,4 @@ extraction_log.txt
 # Runtime status directories
 .run_status/
 .run_status_mm/
+.run_status_*/
