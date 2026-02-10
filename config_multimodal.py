@@ -304,6 +304,20 @@ MULTIMODAL_EXPERIMENTS = {
         )
     ),
 
+    # --- LightCNN + Attention + Patch-level ---
+    "mm_cnn_attention_patch": MultiModalExperimentConfig(
+        exp_name="mm_cnn_attention_patch",
+        model_config=MultiModalConfig(
+            image_encoder_type="light_cnn",
+            fusion_type="attention"
+        ),
+        train_config=MultiModalTrainConfig(
+            training_mode="patch_level",
+            batch_size=64,
+            patch_level_aggregation="trimmed_mean"
+        )
+    ),
+
     # --- ResNet patch-level ---
     "mm_resnet18_concat_patch": MultiModalExperimentConfig(
         exp_name="mm_resnet18_concat_patch",
@@ -738,6 +752,70 @@ MULTIMODAL_EXPERIMENTS = {
         model_config=MultiModalConfig(
             image_encoder_type="light_cnn",
             fusion_type="concat"
+        ),
+        train_config=MultiModalTrainConfig(
+            training_mode="patch_level",
+            batch_size=8,
+            patch_level_aggregation="trimmed_mean"
+        ),
+        pretrain_config=MAEConfig(encoder_type="light_cnn"),
+        use_pretrain=True,
+        num_workers=2
+    ),
+
+    # --- SimCLR + FiLM/Gated + Patch-level ---
+    "mm_simclr_cnn_film_patch": MultiModalExperimentConfig(
+        exp_name="mm_simclr_cnn_film_patch",
+        model_config=MultiModalConfig(
+            image_encoder_type="light_cnn",
+            fusion_type="film"
+        ),
+        train_config=MultiModalTrainConfig(
+            training_mode="patch_level",
+            batch_size=8,
+            patch_level_aggregation="trimmed_mean"
+        ),
+        pretrain_config=SimCLRConfig(encoder_type="light_cnn"),
+        use_pretrain=True,
+        num_workers=2
+    ),
+    "mm_simclr_cnn_gated_patch": MultiModalExperimentConfig(
+        exp_name="mm_simclr_cnn_gated_patch",
+        model_config=MultiModalConfig(
+            image_encoder_type="light_cnn",
+            fusion_type="gated"
+        ),
+        train_config=MultiModalTrainConfig(
+            training_mode="patch_level",
+            batch_size=8,
+            patch_level_aggregation="trimmed_mean"
+        ),
+        pretrain_config=SimCLRConfig(encoder_type="light_cnn"),
+        use_pretrain=True,
+        num_workers=2
+    ),
+
+    # --- MAE + FiLM/Gated + Patch-level ---
+    "mm_mae_cnn_film_patch": MultiModalExperimentConfig(
+        exp_name="mm_mae_cnn_film_patch",
+        model_config=MultiModalConfig(
+            image_encoder_type="light_cnn",
+            fusion_type="film"
+        ),
+        train_config=MultiModalTrainConfig(
+            training_mode="patch_level",
+            batch_size=8,
+            patch_level_aggregation="trimmed_mean"
+        ),
+        pretrain_config=MAEConfig(encoder_type="light_cnn"),
+        use_pretrain=True,
+        num_workers=2
+    ),
+    "mm_mae_cnn_gated_patch": MultiModalExperimentConfig(
+        exp_name="mm_mae_cnn_gated_patch",
+        model_config=MultiModalConfig(
+            image_encoder_type="light_cnn",
+            fusion_type="gated"
         ),
         train_config=MultiModalTrainConfig(
             training_mode="patch_level",

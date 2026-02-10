@@ -70,7 +70,9 @@ Baseline_Pretrain/
 │   │   └── run_unified_multimodal_gpu.sh  # BERT 多模态 GPU 调度脚本
 │   ├── ablation/                  # 消融实验脚本 [NEW v3.3]
 │   │   ├── run_single_vs_multimodal.sh  # 单模态 vs 多模态消融
-│   │   └── run_policy_ablation.sh       # 政策来源消融（Structured/BERT/Hybrid）
+│   │   ├── run_policy_ablation.sh       # 政策来源消融（2模型 × 4政策）
+│   │   └── run_policy_ablation_all_experiments.sh  # 完整政策消融（56配置 × 4政策 = 200配置 × 3种子 = 600实验）
+│   ├── run_missing_experiments.sh       # 补缺实验脚本（Gap Analysis 生成）
 │   └── utils/                     # 工具脚本
 │       └── start_experiments.sh         # tmux 启动实验
 ├── checkpoints/                   # 模型检查点 (gitignore)
@@ -800,7 +802,9 @@ BERT 多模态实验在 `config_multimodal_bert.py` 中定义，三种政策来�
 | 脚本 | 比较维度 | 说明 |
 |------|---------|------|
 | `scripts/ablation/run_single_vs_multimodal.sh` | 单模态 vs 多模态 | 验证政策特征的增益 |
-| `scripts/ablation/run_policy_ablation.sh` | Structured vs BERT vs Hybrid | 比较三种政策来源的效果 |
+| `scripts/ablation/run_policy_ablation.sh` | Structured vs BERT vs Hybrid | 2 模型 × 4 政策来源消融（24 实验） |
+| `scripts/ablation/run_policy_ablation_all_experiments.sh` | 完整政策消融 | 56 配置 × 4 政策 = 200 配置 × 3 种子（600 实验） |
+| `scripts/run_missing_experiments.sh` | 补缺实验 | Gap Analysis 识别的 42 个缺失实验 |
 
 ---
 
@@ -1340,7 +1344,9 @@ requests>=2.28.0               # [NEW v3.3] 瓦片下载
 #### 消融实验脚本
 
 - **`scripts/ablation/run_single_vs_multimodal.sh`**: 单模态 vs 多模态消融
-- **`scripts/ablation/run_policy_ablation.sh`**: Structured vs BERT vs Hybrid 政策来源消融
+- **`scripts/ablation/run_policy_ablation.sh`**: Structured vs BERT vs Hybrid 政策来源消融（2 模型 × 4 政策 = 24 实验）
+- **`scripts/ablation/run_policy_ablation_all_experiments.sh`**: 完整政策消融（56 配置 × 4 政策 = 200 配置 × 3 种子 = 600 实验）
+- **`scripts/run_missing_experiments.sh`**: Gap Analysis 补缺实验（14 配置 × 3 种子 = 42 实验）
 - **`scripts/multimodal_bert/run_unified_multimodal_gpu.sh`**: BERT 多模态 GPU 调度脚本
 
 #### 基线模型增强

@@ -76,7 +76,7 @@ CNN_EXPERIMENTS=(
 
 # --- ResNet18 组 (FiLM融合) ---
 RESNET_EXPERIMENTS=(
-    "none:train.py:resnet_baseline:Baseline:ResNet18_仅影像"
+    "none:train.py:resnet18_baseline:Baseline:ResNet18_仅影像"
     "structured:train_multimodal_bert.py:mm_resnet18_film:Multimodal:ResNet18_结构化政策12d"
     "bert:train_multimodal_bert.py:bert_resnet18_film:MultimodalBert:ResNet18_BERT政策64d"
     "hybrid:train_multimodal_bert.py:hybrid_resnet18_film:MultimodalHybrid:ResNet18_混合政策76d"
