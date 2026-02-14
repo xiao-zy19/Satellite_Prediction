@@ -650,6 +650,8 @@ echo "创建 tmux session: $SESSION_NAME"
 
 tmux kill-session -t "$SESSION_NAME" 2>/dev/null || true
 tmux new-session -d -s "$SESSION_NAME" -n "monitor"
+tmux set-option -t "$SESSION_NAME" allow-rename off
+tmux set-option -t "$SESSION_NAME" automatic-rename off
 
 tmux send-keys -t "$SESSION_NAME:monitor" "cd $PROJECT_DIR" Enter
 tmux send-keys -t "$SESSION_NAME:monitor" "echo '=== 完整政策消融实验监控 ==='" Enter
@@ -659,6 +661,8 @@ tmux send-keys -t "$SESSION_NAME:monitor" "watch -n 5 'echo \"=== 运行中 ===\
 # ============================================================================
 # 启动实验
 # ============================================================================
+WINDOW_INDEX=0
+
 start_experiment() {
     local policy=$1
     local script=$2
@@ -669,14 +673,12 @@ start_experiment() {
 
     local task_id="${policy}_${exp_name}_seed${seed}"
     local log_file="${LOG_DIR}/${task_id}.log"
-    local window_name="${exp_name}_s${seed}"
 
-    # tmux 窗口名截断 (避免过长)
-    if [ ${#window_name} -gt 30 ]; then
-        window_name="${window_name:0:30}"
-    fi
+    # 使用全局递增序号作为窗口名, 避免长名称截断后冲突
+    WINDOW_INDEX=$((WINDOW_INDEX + 1))
+    local window_name="e$(printf '%04d' $WINDOW_INDEX)"
 
-    echo "[$(date '+%H:%M:%S')] 启动: [$policy] $exp_name (seed=$seed) -> GPU $gpu"
+    echo "[$(date '+%H:%M:%S')] 启动: [$policy] $exp_name (seed=$seed) -> GPU $gpu [窗口: $window_name]"
 
     lock_gpu "$gpu" "$task_id"
 
@@ -684,7 +686,7 @@ start_experiment() {
     tmux send-keys -t "$SESSION_NAME:$window_name" "cd $PROJECT_DIR" Enter
     tmux send-keys -t "$SESSION_NAME:$window_name" "export PATH=${CONDA_BASE}/envs/${CONDA_ENV}/bin:\$PATH" Enter
     tmux send-keys -t "$SESSION_NAME:$window_name" "export CUDA_VISIBLE_DEVICES=$gpu" Enter
-    tmux send-keys -t "$SESSION_NAME:$window_name" "echo '=== [$policy] $exp_name | GPU: $gpu | Seed: $seed ==='" Enter
+    tmux send-keys -t "$SESSION_NAME:$window_name" "echo '=== [$window_name] [$policy] $exp_name | GPU: $gpu | Seed: $seed ==='" Enter
 
     local cmd="python ${script} --exp $exp_name --gpu $gpu --seed $seed --normalize_on_gpu 2>&1 | tee $log_file"
     cmd="$cmd; if [ \$? -eq 0 ]; then echo success > ${STATUS_DIR}/exp_${task_id}.status; else echo failed > ${STATUS_DIR}/exp_${task_id}.status; fi"

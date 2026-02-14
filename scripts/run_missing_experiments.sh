@@ -65,19 +65,19 @@ mkdir -p "$STATUS_DIR"
 # --- P0: 必做实验 (SimCLR城市级基准 + 预测最优组合) ---
 P0_EXPERIMENTS=(
     # SimCLR 城市级基准 (配对Patch实验，用于预训练×Patch交互分析)
-    "train_multimodal.py:mm_simclr_cnn_concat:Multimodal:SimCLR+Concat+City_配对基准"
-    "train_multimodal.py:mm_simclr_cnn_film:Multimodal:SimCLR+FiLM+City_配对基准"
-    "train_multimodal.py:mm_simclr_cnn_gated:Multimodal:SimCLR+Gated+City_配对基准"
+    "train_multimodal_bert.py:mm_simclr_cnn_concat:Multimodal:SimCLR+Concat+City_配对基准"
+    "train_multimodal_bert.py:mm_simclr_cnn_film:Multimodal:SimCLR+FiLM+City_配对基准"
+    "train_multimodal_bert.py:mm_simclr_cnn_gated:Multimodal:SimCLR+Gated+City_配对基准"
     # SimCLR/MAE Patch-level 补充
-    "train_multimodal.py:mm_simclr_cnn_film_patch:Multimodal:SimCLR+FiLM+Patch_预测最优"
-    "train_multimodal.py:mm_simclr_cnn_gated_patch:Multimodal:SimCLR+Gated+Patch_融合对比"
-    "train_multimodal.py:mm_mae_cnn_film_patch:Multimodal:MAE+FiLM+Patch_预训练对比"
+    "train_multimodal_bert.py:mm_simclr_cnn_film_patch:Multimodal:SimCLR+FiLM+Patch_预测最优"
+    "train_multimodal_bert.py:mm_simclr_cnn_gated_patch:Multimodal:SimCLR+Gated+Patch_融合对比"
+    "train_multimodal_bert.py:mm_mae_cnn_film_patch:Multimodal:MAE+FiLM+Patch_预训练对比"
 )
 
 # --- P1: 推荐实验 (完善消融矩阵) ---
 P1_EXPERIMENTS=(
-    "train_multimodal.py:mm_mae_cnn_gated_patch:Multimodal:MAE+Gated+Patch_消融补全"
-    "train_multimodal.py:mm_cnn_attention_patch:Multimodal:Attention+Patch_融合补全"
+    "train_multimodal_bert.py:mm_mae_cnn_gated_patch:Multimodal:MAE+Gated+Patch_消融补全"
+    "train_multimodal_bert.py:mm_cnn_attention_patch:Multimodal:Attention+Patch_融合补全"
 )
 
 # --- P2: 可选实验 (BERT/Hybrid Patch-Level) ---

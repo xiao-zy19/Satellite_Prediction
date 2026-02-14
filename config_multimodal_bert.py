@@ -554,6 +554,20 @@ BERT_MULTIMODAL_EXPERIMENTS = {
             patch_level_aggregation="trimmed_mean"
         )
     ),
+    "mm_cnn_attention_patch": MultiModalBertExperimentConfig(
+        exp_name="mm_cnn_attention_patch",
+        model_config=MultiModalBertConfig(
+            image_encoder_type="light_cnn",
+            fusion_type="attention",
+            policy_source=_structured_config()
+        ),
+        train_config=MultiModalTrainConfig(
+            training_mode="patch_level",
+            batch_size=64,
+            patch_level_aggregation="trimmed_mean"
+        )
+    ),
+
     "mm_resnet18_concat_patch": MultiModalBertExperimentConfig(
         exp_name="mm_resnet18_concat_patch",
         model_config=MultiModalBertConfig(
@@ -664,6 +678,38 @@ BERT_MULTIMODAL_EXPERIMENTS = {
         use_pretrain=True,
         num_workers=2
     ),
+    "mm_simclr_cnn_film_patch": MultiModalBertExperimentConfig(
+        exp_name="mm_simclr_cnn_film_patch",
+        model_config=MultiModalBertConfig(
+            image_encoder_type="light_cnn",
+            fusion_type="film",
+            policy_source=_structured_config()
+        ),
+        train_config=MultiModalTrainConfig(
+            training_mode="patch_level",
+            batch_size=8,
+            patch_level_aggregation="trimmed_mean"
+        ),
+        pretrain_config=SimCLRConfig(encoder_type="light_cnn"),
+        use_pretrain=True,
+        num_workers=2
+    ),
+    "mm_simclr_cnn_gated_patch": MultiModalBertExperimentConfig(
+        exp_name="mm_simclr_cnn_gated_patch",
+        model_config=MultiModalBertConfig(
+            image_encoder_type="light_cnn",
+            fusion_type="gated",
+            policy_source=_structured_config()
+        ),
+        train_config=MultiModalTrainConfig(
+            training_mode="patch_level",
+            batch_size=8,
+            patch_level_aggregation="trimmed_mean"
+        ),
+        pretrain_config=SimCLRConfig(encoder_type="light_cnn"),
+        use_pretrain=True,
+        num_workers=2
+    ),
 
     # --- MAE Pretrain (Structured) ---
     "mm_mae_cnn_concat": MultiModalBertExperimentConfig(
@@ -737,6 +783,38 @@ BERT_MULTIMODAL_EXPERIMENTS = {
         model_config=MultiModalBertConfig(
             image_encoder_type="light_cnn",
             fusion_type="concat",
+            policy_source=_structured_config()
+        ),
+        train_config=MultiModalTrainConfig(
+            training_mode="patch_level",
+            batch_size=8,
+            patch_level_aggregation="trimmed_mean"
+        ),
+        pretrain_config=MAEConfig(encoder_type="light_cnn"),
+        use_pretrain=True,
+        num_workers=2
+    ),
+    "mm_mae_cnn_film_patch": MultiModalBertExperimentConfig(
+        exp_name="mm_mae_cnn_film_patch",
+        model_config=MultiModalBertConfig(
+            image_encoder_type="light_cnn",
+            fusion_type="film",
+            policy_source=_structured_config()
+        ),
+        train_config=MultiModalTrainConfig(
+            training_mode="patch_level",
+            batch_size=8,
+            patch_level_aggregation="trimmed_mean"
+        ),
+        pretrain_config=MAEConfig(encoder_type="light_cnn"),
+        use_pretrain=True,
+        num_workers=2
+    ),
+    "mm_mae_cnn_gated_patch": MultiModalBertExperimentConfig(
+        exp_name="mm_mae_cnn_gated_patch",
+        model_config=MultiModalBertConfig(
+            image_encoder_type="light_cnn",
+            fusion_type="gated",
             policy_source=_structured_config()
         ),
         train_config=MultiModalTrainConfig(
