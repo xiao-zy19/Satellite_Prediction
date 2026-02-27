@@ -228,6 +228,92 @@ class FiLMFusion(nn.Module):
         return self.dropout(F.relu(fused))
 
 
+class MoEHead(nn.Module):
+    """Mixture of Experts regression head.
+
+    Replaces the single regression head with K expert prediction heads
+    and a gating network that softly routes inputs to experts.
+    """
+
+    def __init__(
+        self,
+        input_dim: int = 64,
+        num_experts: int = 4,
+        expert_hidden_dim: int = 32,
+        gate_input_dim: int = 64,
+        use_balance_loss: bool = True,
+        dropout: float = 0.3,
+    ):
+        super().__init__()
+        self.num_experts = num_experts
+        self.use_balance_loss = use_balance_loss
+
+        # K independent expert heads
+        self.experts = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(input_dim, expert_hidden_dim),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Linear(expert_hidden_dim, 1)
+            )
+            for _ in range(num_experts)
+        ])
+
+        # Gating network (minimal: single linear layer)
+        self.gate = nn.Linear(gate_input_dim, num_experts)
+
+    def forward(self, x, gate_input=None):
+        """
+        Args:
+            x: (batch, input_dim) fused features for expert heads
+            gate_input: (batch, gate_input_dim) input for gating network.
+                        If None, uses x.
+
+        Returns:
+            output: (batch, 1) weighted prediction
+            gate_weights: (batch, num_experts) softmax gate weights
+        """
+        if gate_input is None:
+            gate_input = x
+
+        # Compute gate weights
+        gate_weights = F.softmax(self.gate(gate_input), dim=-1)  # (batch, K)
+
+        # Compute expert outputs
+        expert_outputs = torch.stack(
+            [expert(x) for expert in self.experts], dim=-1
+        )  # (batch, 1, K)
+
+        # Weighted sum
+        output = (expert_outputs * gate_weights.unsqueeze(1)).sum(dim=-1)  # (batch, 1)
+
+        return output, gate_weights
+
+    def compute_balance_loss(self, gate_weights):
+        """KL divergence between batch-mean gate distribution and uniform.
+
+        Encourages all experts to be used equally across the batch.
+
+        Args:
+            gate_weights: (batch, num_experts) softmax gate weights
+
+        Returns:
+            Scalar balance loss
+        """
+        # Average gate weights across batch
+        avg_weights = gate_weights.mean(dim=0)  # (K,)
+        # Clamp to avoid log(0) = -inf when an expert gets near-zero weight
+        avg_weights = torch.clamp(avg_weights, min=1e-8)
+        # Uniform target
+        uniform = torch.ones_like(avg_weights) / self.num_experts
+        # KL(uniform || avg_weights) - encourages avg_weights toward uniform
+        # Use reduction='sum' so the loss magnitude is independent of num_experts
+        balance_loss = F.kl_div(
+            avg_weights.log(), uniform, reduction='sum'
+        )
+        return balance_loss
+
+
 def get_fusion_layer(
     fusion_type: str,
     image_dim: int,
@@ -275,7 +361,12 @@ class MultiModalModel(nn.Module):
         dropout: float = 0.3,
         patch_level: bool = False,
         use_policy_encoder: bool = False,  # Default: use raw 12-dim features
-        model_config=None
+        model_config=None,
+        use_moe: bool = False,
+        num_experts: int = 4,
+        expert_hidden_dim: int = 32,
+        gate_use_policy: bool = False,
+        moe_balance_loss: bool = True,
     ):
         super().__init__()
 
@@ -285,6 +376,9 @@ class MultiModalModel(nn.Module):
         self.patch_level = patch_level
         self.use_policy_encoder = use_policy_encoder
         self.image_feature_dim = image_feature_dim
+        self.use_moe = use_moe
+        self.num_experts = num_experts
+        self.gate_use_policy = gate_use_policy
 
         # Image encoder
         if image_encoder_type == "light_cnn":
@@ -379,12 +473,25 @@ class MultiModalModel(nn.Module):
         )
 
         # Regression head
-        self.regression_head = nn.Sequential(
-            nn.Linear(fusion_output_dim, 32),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(32, 1)
-        )
+        if use_moe:
+            gate_input_dim = fusion_output_dim
+            if gate_use_policy:
+                gate_input_dim += policy_dim
+            self.regression_head = MoEHead(
+                input_dim=fusion_output_dim,
+                num_experts=num_experts,
+                expert_hidden_dim=expert_hidden_dim,
+                gate_input_dim=gate_input_dim,
+                use_balance_loss=moe_balance_loss,
+                dropout=dropout,
+            )
+        else:
+            self.regression_head = nn.Sequential(
+                nn.Linear(fusion_output_dim, 32),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Linear(32, 1)
+            )
 
         self._init_weights()
 
@@ -438,8 +545,12 @@ class MultiModalModel(nn.Module):
         fused = self.fusion(aggregated_image, policy_feat)
 
         # Predict
-        output = self.regression_head(fused)
-        return output
+        if self.use_moe:
+            gate_input = torch.cat([fused, policy_feat], dim=-1) if self.gate_use_policy else fused
+            output, gate_weights = self.regression_head(fused, gate_input)
+            return output, gate_weights
+        else:
+            return self.regression_head(fused)
 
     def _trimmed_mean(self, features, trim_ratio=0.1):
         batch_size, num_patches, feature_dim = features.shape
@@ -470,6 +581,24 @@ class MultiModalModel(nn.Module):
         """Unfreeze image encoder parameters."""
         for param in self.image_encoder.parameters():
             param.requires_grad = True
+
+    def init_moe_from_single_head(self, single_head_state_dict):
+        """Initialize MoE experts from a pretrained single regression head.
+
+        Copies the single head's weights to all K experts with small noise
+        to break symmetry. Used for warm-start training.
+
+        Args:
+            single_head_state_dict: state_dict from nn.Sequential(Linear(64,32), ReLU, Dropout, Linear(32,1))
+        """
+        if not self.use_moe:
+            raise ValueError("Model does not use MoE")
+        for expert in self.regression_head.experts:
+            expert.load_state_dict(single_head_state_dict)
+            # Add small noise to break symmetry
+            with torch.no_grad():
+                for param in expert.parameters():
+                    param.add_(torch.randn_like(param) * 0.01)
 
 
 if __name__ == "__main__":
@@ -552,3 +681,28 @@ if __name__ == "__main__":
         output_city = model_city(x_img, x_policy)
     print(f"Input: image={x_img.shape}, policy={x_policy.shape}")
     print(f"Output: {output_city.shape}")
+
+    print("\n" + "=" * 60)
+    print("MoE Head test")
+    print("=" * 60)
+
+    for k in [2, 4, 6]:
+        for gpol in [False, True]:
+            model_moe = MultiModalModel(
+                image_encoder_type="light_cnn",
+                fusion_type="gated",
+                image_feature_dim=64,
+                patch_level=True,
+                use_policy_encoder=False,
+                use_moe=True,
+                num_experts=k,
+                gate_use_policy=gpol,
+            )
+            params = sum(p.numel() for p in model_moe.parameters())
+            with torch.no_grad():
+                out, gw = model_moe(x_img_single, x_policy)
+            assert out.shape == (batch_size, 1), f"Bad output shape: {out.shape}"
+            assert gw.shape == (batch_size, k), f"Bad gate shape: {gw.shape}"
+            assert torch.allclose(gw.sum(dim=-1), torch.ones(batch_size)), "Gate weights don't sum to 1"
+            gpol_str = "+policy" if gpol else ""
+            print(f"  K={k} gate=fused{gpol_str}: {params:,} params | out={out.shape} gw={gw.shape} OK")

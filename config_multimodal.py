@@ -84,6 +84,14 @@ class MultiModalConfig:
     # Common
     dropout_rate: float = 0.3
 
+    # MoE configuration
+    use_moe: bool = False
+    num_experts: int = 4
+    expert_hidden_dim: int = 32
+    gate_use_policy: bool = False
+    moe_balance_loss: bool = True
+    moe_balance_weight: float = 0.1
+
 
 @dataclass
 class MultiModalTrainConfig:
@@ -826,6 +834,143 @@ MULTIMODAL_EXPERIMENTS = {
         use_pretrain=True,
         num_workers=2
     ),
+
+    # ==========================================================================
+    # MoE (Mixture of Experts) Experiments
+    # All based on mm_mae_cnn_gated_patch (MAE + LightCNN + Gated + Patch-level)
+    # ==========================================================================
+
+    # --- Minimal MoE: K=2 ---
+    "mm_mae_cnn_gated_patch_moe2": MultiModalExperimentConfig(
+        exp_name="mm_mae_cnn_gated_patch_moe2",
+        model_config=MultiModalConfig(
+            image_encoder_type="light_cnn",
+            fusion_type="gated",
+            use_moe=True,
+            num_experts=2,
+            gate_use_policy=False,
+            moe_balance_loss=True,
+            moe_balance_weight=0.1,
+        ),
+        train_config=MultiModalTrainConfig(
+            training_mode="patch_level",
+            batch_size=8,
+            patch_level_aggregation="trimmed_mean"
+        ),
+        pretrain_config=MAEConfig(encoder_type="light_cnn"),
+        use_pretrain=True,
+        num_workers=2
+    ),
+
+    # --- Standard MoE: K=4 ---
+    "mm_mae_cnn_gated_patch_moe4": MultiModalExperimentConfig(
+        exp_name="mm_mae_cnn_gated_patch_moe4",
+        model_config=MultiModalConfig(
+            image_encoder_type="light_cnn",
+            fusion_type="gated",
+            use_moe=True,
+            num_experts=4,
+            gate_use_policy=False,
+            moe_balance_loss=True,
+            moe_balance_weight=0.1,
+        ),
+        train_config=MultiModalTrainConfig(
+            training_mode="patch_level",
+            batch_size=8,
+            patch_level_aggregation="trimmed_mean"
+        ),
+        pretrain_config=MAEConfig(encoder_type="light_cnn"),
+        use_pretrain=True,
+        num_workers=2
+    ),
+
+    # --- K=4 with gate seeing policy features ---
+    "mm_mae_cnn_gated_patch_moe4_gpol": MultiModalExperimentConfig(
+        exp_name="mm_mae_cnn_gated_patch_moe4_gpol",
+        model_config=MultiModalConfig(
+            image_encoder_type="light_cnn",
+            fusion_type="gated",
+            use_moe=True,
+            num_experts=4,
+            gate_use_policy=True,
+            moe_balance_loss=True,
+            moe_balance_weight=0.1,
+        ),
+        train_config=MultiModalTrainConfig(
+            training_mode="patch_level",
+            batch_size=8,
+            patch_level_aggregation="trimmed_mean"
+        ),
+        pretrain_config=MAEConfig(encoder_type="light_cnn"),
+        use_pretrain=True,
+        num_workers=2
+    ),
+
+    # --- K=4 without balance regularization ---
+    "mm_mae_cnn_gated_patch_moe4_nobal": MultiModalExperimentConfig(
+        exp_name="mm_mae_cnn_gated_patch_moe4_nobal",
+        model_config=MultiModalConfig(
+            image_encoder_type="light_cnn",
+            fusion_type="gated",
+            use_moe=True,
+            num_experts=4,
+            gate_use_policy=False,
+            moe_balance_loss=False,
+            moe_balance_weight=0.0,
+        ),
+        train_config=MultiModalTrainConfig(
+            training_mode="patch_level",
+            batch_size=8,
+            patch_level_aggregation="trimmed_mean"
+        ),
+        pretrain_config=MAEConfig(encoder_type="light_cnn"),
+        use_pretrain=True,
+        num_workers=2
+    ),
+
+    # --- More experts: K=6 ---
+    "mm_mae_cnn_gated_patch_moe6": MultiModalExperimentConfig(
+        exp_name="mm_mae_cnn_gated_patch_moe6",
+        model_config=MultiModalConfig(
+            image_encoder_type="light_cnn",
+            fusion_type="gated",
+            use_moe=True,
+            num_experts=6,
+            gate_use_policy=False,
+            moe_balance_loss=True,
+            moe_balance_weight=0.1,
+        ),
+        train_config=MultiModalTrainConfig(
+            training_mode="patch_level",
+            batch_size=8,
+            patch_level_aggregation="trimmed_mean"
+        ),
+        pretrain_config=MAEConfig(encoder_type="light_cnn"),
+        use_pretrain=True,
+        num_workers=2
+    ),
+
+    # --- Minimal + policy gate: K=2, gate_use_policy ---
+    "mm_mae_cnn_gated_patch_moe2_gpol": MultiModalExperimentConfig(
+        exp_name="mm_mae_cnn_gated_patch_moe2_gpol",
+        model_config=MultiModalConfig(
+            image_encoder_type="light_cnn",
+            fusion_type="gated",
+            use_moe=True,
+            num_experts=2,
+            gate_use_policy=True,
+            moe_balance_loss=True,
+            moe_balance_weight=0.1,
+        ),
+        train_config=MultiModalTrainConfig(
+            training_mode="patch_level",
+            batch_size=8,
+            patch_level_aggregation="trimmed_mean"
+        ),
+        pretrain_config=MAEConfig(encoder_type="light_cnn"),
+        use_pretrain=True,
+        num_workers=2
+    ),
 }
 
 
@@ -881,6 +1026,12 @@ def print_multimodal_config(exp_config: MultiModalExperimentConfig):
         print(f"    Pretrain LR: {tc.pretrain_lr}")
     else:
         print(f"  Self-Supervised Pretrain: None")
+
+    # Show MoE config
+    if getattr(mc, 'use_moe', False):
+        print(f"  MoE: {mc.num_experts} experts, gate_use_policy={mc.gate_use_policy}")
+        print(f"    Balance Loss: {mc.moe_balance_loss} (weight={mc.moe_balance_weight})")
+        print(f"    Expert Hidden Dim: {mc.expert_hidden_dim}")
 
     print(f"  Batch Size: {tc.batch_size}")
     print(f"  Learning Rate: {tc.learning_rate}")

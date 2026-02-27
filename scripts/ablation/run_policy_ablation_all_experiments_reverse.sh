@@ -1,7 +1,7 @@
 #!/bin/bash
 # ============================================================================
-# 完整政策消融实验脚本 (All Experiments)
-# run_policy_ablation_all_experiments.sh
+# 完整政策消融实验脚本 (All Experiments) - 反向顺序
+# run_policy_ablation_all_experiments_reverse.sh
 #
 # 目的: 将 run_mm_simple_gpu.sh 中所有56个实验配置扩展到4种政策输入方式,
 #       构建完整的政策特征消融实验矩阵
@@ -34,13 +34,13 @@ set -e
 # 项目配置
 # ============================================================================
 PROJECT_DIR="/share_data/data101/xiaozhenyu/degree_essay/Alpha_Earth/AEF_Data/Baseline_Pretrain"
-LOG_DIR="${PROJECT_DIR}/logs/ablation_policy_all"
+LOG_DIR="${PROJECT_DIR}/logs/ablation_policy_all_rev"
 RESULT_DIR="${PROJECT_DIR}/results"
-STATUS_DIR="${PROJECT_DIR}/.run_status_policy_ablation_all"
-SESSION_NAME="policy_ablation_all"
+STATUS_DIR="${PROJECT_DIR}/.run_status_policy_ablation_all_rev"
+SESSION_NAME="policy_ablation_all_rev"
 
 CONDA_BASE="/share_data/data101/xiaozhenyu/anaconda3"
-CONDA_ENV="alphaearth12"
+CONDA_ENV="alphaearth"
 
 mkdir -p "$LOG_DIR"
 mkdir -p "$RESULT_DIR"
@@ -262,7 +262,7 @@ _list_group() {
 show_help() {
     echo "用法: bash $0 [选项]"
     echo ""
-    echo "** 完整政策消融实验 - 56个实验配置 × 4种政策输入方式 **"
+    echo "** 完整政策消融实验 (反向顺序) - 56个实验配置 × 4种政策输入方式 **"
     echo ""
     echo "选项:"
     echo "  --help, -h           显示帮助"
@@ -534,6 +534,14 @@ for exp_entry in "${EXPERIMENT_LIST[@]}"; do
     done
 done
 
+# 反转任务列表顺序
+TASK_LIST_REVERSED=()
+for (( i=${#TASK_LIST[@]}-1; i>=0; i-- )); do
+    TASK_LIST_REVERSED+=("${TASK_LIST[$i]}")
+done
+TASK_LIST=("${TASK_LIST_REVERSED[@]}")
+unset TASK_LIST_REVERSED
+
 # Resume: 跳过已完成
 # 注意: train_multimodal.py (旧脚本) 将structured结果存到 results/{run_id}_results.pkl (根目录)
 #       train_multimodal_bert.py (新脚本) 将结果存到 results/{Multimodal|MultimodalBert|MultimodalHybrid}/
@@ -572,7 +580,7 @@ TOTAL=${#TASK_LIST[@]}
 # 信息展示
 # ============================================================================
 echo "=============================================="
-echo "  完整政策消融实验"
+echo "  完整政策消融实验 (反向顺序)"
 echo "=============================================="
 echo "GPU列表:     ${GPUS[*]}"
 echo "并行数:      $PARALLEL_COUNT"
@@ -654,7 +662,7 @@ tmux set-option -t "$SESSION_NAME" allow-rename off
 tmux set-option -t "$SESSION_NAME" automatic-rename off
 
 tmux send-keys -t "$SESSION_NAME:monitor" "cd $PROJECT_DIR" Enter
-tmux send-keys -t "$SESSION_NAME:monitor" "echo '=== 完整政策消融实验监控 ==='" Enter
+tmux send-keys -t "$SESSION_NAME:monitor" "echo '=== 完整政策消融实验监控 (反向顺序) ==='" Enter
 tmux send-keys -t "$SESSION_NAME:monitor" "echo '总任务数: $TOTAL | 并行数: $PARALLEL_COUNT | 政策: ${POLICY_LIST[*]}'" Enter
 tmux send-keys -t "$SESSION_NAME:monitor" "watch -n 5 'echo \"=== 运行中 ===\"; cat ${STATUS_DIR}/gpu_*.lock 2>/dev/null | head -20; echo \"\"; echo \"=== 已完成: \$(ls ${STATUS_DIR}/exp_*.status 2>/dev/null | wc -l)/$TOTAL ===\"; echo \"\"; nvidia-smi --query-gpu=index,utilization.gpu,memory.used --format=csv,noheader 2>/dev/null'" Enter
 
@@ -759,7 +767,7 @@ done
 # ============================================================================
 echo ""
 echo "=============================================="
-echo "  完整政策消融实验完成!"
+echo "  完整政策消融实验完成! (反向顺序)"
 echo "=============================================="
 
 SUCCESS=0

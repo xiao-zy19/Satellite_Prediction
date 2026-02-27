@@ -4,6 +4,8 @@
 
 本项目比较了不同模型架构（MLP、LightCNN、ResNet、**Multimodal**、**Multimodal-BERT**）和不同预训练策略（无预训练、SimCLR、MAE、ImageNet）对人口增长率预测性能的影响。
 
+**v3.5 新增**: Mixture of Experts (MoE) 回归头，支持多专家软路由与负载均衡；修复数据划分确定性问题；新增综合结果分析工具。
+
 **v3.3 新增**: BERT 政策文本嵌入系统（chinese-roberta-wwm-ext），支持三种政策来源（structured/bert/hybrid）；预训练数据提取与瓦片补全管线；消融实验脚本。
 
 **v3.2 新增**: 多模态模型支持自监督预训练（SimCLR/MAE）和位置感知聚合（Transformer），大幅扩展实验配置。
@@ -25,6 +27,9 @@ Baseline_Pretrain/
 ├── train_multimodal_bert.py       # BERT 多模态模型训练脚本 [NEW v3.3]
 ├── evaluate.py                    # 模型评估脚本
 ├── compare_results.py             # 实验结果对比分析（支持子目录递归搜索）
+├── analyze_results_bd.py          # 综合结果分析（多维度汇总报告）[NEW v3.5]
+├── analyze_split_impact.py        # 数据划分不一致性影响分析 [NEW v3.5]
+├── compare_thesis_vs_resultsbd.py # 论文数据与实验结果校验 [NEW v3.5]
 ├── utils.py                       # 工具函数（指标计算、日志、检查点等）
 ├── policy_features.py             # 政策特征提取模块
 ├── policy_bert.py                 # BERT 政策文本嵌入模块 [NEW v3.3]
@@ -65,14 +70,17 @@ Baseline_Pretrain/
 │   │   ├── run_mm_simple_gpu.sh         # 多模态 GPU 归一化版本
 │   │   ├── run_mm_tmux.sh               # 多模态 tmux 管理脚本
 │   │   ├── run_multimodal_experiments.sh  # 多模态批量实验
-│   │   └── run_multimodal_queue.sh      # 多模态队列运行
+│   │   ├── run_multimodal_queue.sh      # 多模态队列运行
+│   │   └── run_moe_experiments.sh       # MoE 批量实验 (6配置×3种子) [NEW v3.5]
 │   ├── multimodal_bert/           # BERT 多模态实验脚本 [NEW v3.3]
 │   │   └── run_unified_multimodal_gpu.sh  # BERT 多模态 GPU 调度脚本
 │   ├── ablation/                  # 消融实验脚本 [NEW v3.3]
 │   │   ├── run_single_vs_multimodal.sh  # 单模态 vs 多模态消融
 │   │   ├── run_policy_ablation.sh       # 政策来源消融（2模型 × 4政策）
-│   │   └── run_policy_ablation_all_experiments.sh  # 完整政策消融（56配置 × 4政策 = 200配置 × 3种子 = 600实验）
+│   │   ├── run_policy_ablation_all_experiments.sh  # 完整政策消融（56配置 × 4政策 = 200配置 × 3种子 = 600实验）
+│   │   └── run_policy_ablation_all_experiments_reverse.sh  # 完整政策消融（反向顺序）[NEW v3.5]
 │   ├── run_missing_experiments.sh       # 补缺实验脚本（Gap Analysis 生成）
+│   ├── run_missing_experiments_reverse.sh  # 补缺实验（反向顺序）[NEW v3.5]
 │   └── utils/                     # 工具脚本
 │       └── start_experiments.sh         # tmux 启动实验
 ├── checkpoints/                   # 模型检查点 (gitignore)
@@ -207,6 +215,22 @@ python train_multimodal.py --exp mm_resnet101_concat --gpu 3
 
 # 启用 GPU 归一化加速训练
 python train_multimodal.py --exp mm_cnn_concat --gpu 3 --normalize_on_gpu
+
+# ============================================
+# Mixture of Experts (MoE) 实验 [NEW v3.5]
+# ============================================
+
+# MoE 基础（K=4 专家，MAE+LightCNN+Gated+Patch）
+python train_multimodal.py --exp mm_mae_cnn_gated_patch_moe4 --gpu 3 --normalize_on_gpu
+
+# MoE 变体
+python train_multimodal.py --exp mm_mae_cnn_gated_patch_moe2 --gpu 3 --normalize_on_gpu     # K=2
+python train_multimodal.py --exp mm_mae_cnn_gated_patch_moe6 --gpu 3 --normalize_on_gpu     # K=6
+python train_multimodal.py --exp mm_mae_cnn_gated_patch_moe4_gpol --gpu 3 --normalize_on_gpu  # 门控用政策特征
+python train_multimodal.py --exp mm_mae_cnn_gated_patch_moe4_nobal --gpu 3 --normalize_on_gpu # 无均衡损失
+
+# 批量运行所有 MoE 实验 (6配置 × 3种子 = 18 runs)
+bash scripts/multimodal/run_moe_experiments.sh 0   # 在 GPU 0 上运行
 
 # ============================================
 # BERT 政策嵌入多模态实验 [NEW v3.3]
@@ -437,11 +461,47 @@ BERT 多模态模型使用 BERT 编码的政策文本嵌入替代（或增强）
 
 **适用实验**: `bert_mm_*`, `hybrid_mm_*`, `struct_mm_*`
 
+### MoE (Mixture of Experts) 回归头 [NEW v3.5]
+
+在多模态融合特征之上，用 K 个独立专家替代单一回归头，门控网络软路由输入到各专家：
+
+```
+融合特征 (batch, 64)
+    ↓
+门控网络: Linear(gate_input_dim, K) → Softmax → 权重 (batch, K)
+    ↓
+K 个专家头: 各自 Linear(64, 32) → ReLU → Dropout → Linear(32, 1) → 预测 (batch, 1, K)
+    ↓
+加权求和: Σ(权重 × 专家预测) → 输出 (batch, 1)
+```
+
+**配置参数**:
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `use_moe` | 启用 MoE | `False` |
+| `num_experts` | 专家数量 K | `4` |
+| `expert_hidden_dim` | 专家隐藏层维度 | `32` |
+| `gate_use_policy` | 门控是否使用政策特征 | `False` |
+| `moe_balance_loss` | 负载均衡损失 (KL散度) | `True` |
+| `moe_balance_weight` | 均衡损失权重 | `0.1` |
+
+**消融实验矩阵**（均基于 MAE + LightCNN + Gated + Patch-level）:
+| 实验名 | K | 门控用政策 | 均衡损失 | 消融变量 |
+|--------|---|-----------|---------|---------|
+| `moe2` | 2 | No | Yes | 最少专家 |
+| `moe4` | 4 | No | Yes | 标准配置 |
+| `moe4_gpol` | 4 | Yes | Yes | 政策引导门控 |
+| `moe4_nobal` | 4 | No | No | 无正则化 |
+| `moe6` | 6 | No | Yes | 更多专家 |
+| `moe2_gpol` | 2 | Yes | Yes | 最少+政策 |
+
+**结果保存**：MoE 实验额外保存 `moe_expert_analysis`（逐样本门控权重），用于可解释性分析。
+
 ---
 
 ## 实验总览
 
-当前共有 **约 305 个实验配置**（基础模型 80 + 多模态 ~75 + BERT 多模态 ~150），按模型类型组织如下：
+当前共有 **约 311 个实验配置**（基础模型 80 + 多模态 ~81 + BERT 多模态 ~150），按模型类型组织如下：
 
 ### 基础模型实验（80 个）
 
@@ -456,7 +516,7 @@ BERT 多模态模型使用 BERT 编码的政策文本嵌入替代（或增强）
 | ResNet101 | 4 | - | - | 4 | 8 |
 | **总计** | **43** | **12** | **9** | **16** | **80** |
 
-### 多模态实验（~75 个）[v3.2 扩展]
+### 多模态实验（~81 个）[v3.5 扩展]
 
 | 类别 | 描述 | 实验数量 |
 |------|------|---------|
@@ -466,8 +526,9 @@ BERT 多模态模型使用 BERT 编码的政策文本嵌入替代（或增强）
 | **MAE 预训练** | 掩码自编码器 + 多模态微调 | 8 |
 | **ResNet 深度扩展** | ResNet10/34/50/101 变体 | 11 |
 | **Patch-level** | 包含预训练的 Patch-level 实验 | 6 |
+| **MoE 回归头** | Mixture of Experts 消融实验 | 6 |
 | **自定义模型** | 小型 LightCNN 等 | 1 |
-| **总计** | - | **~75** |
+| **总计** | - | **~81** |
 
 #### 详细分类
 
@@ -751,6 +812,19 @@ BERT 多模态模型使用 BERT 编码的政策文本嵌入替代（或增强）
 |---|----------|------|
 | 138 | mm_cnn_small_concat | 小型 LightCNN (channels=[16,32,64]) |
 
+#### 4.8 MoE (Mixture of Experts) 实验 [NEW v3.5]
+
+> 所有 MoE 实验基于 MAE + LightCNN + Gated + Patch-level 配置
+
+| # | 实验名称 | 专家数 K | 门控用政策 | 均衡损失 | 消融变量 |
+|---|----------|---------|-----------|---------|---------|
+| 139 | mm_mae_cnn_gated_patch_moe2 | 2 | No | Yes | 最少专家 |
+| 140 | mm_mae_cnn_gated_patch_moe4 | 4 | No | Yes | 标准配置 |
+| 141 | mm_mae_cnn_gated_patch_moe4_gpol | 4 | Yes | Yes | 政策引导门控 |
+| 142 | mm_mae_cnn_gated_patch_moe4_nobal | 4 | No | No | 无正则化 |
+| 143 | mm_mae_cnn_gated_patch_moe6 | 6 | No | Yes | 更多专家 |
+| 144 | mm_mae_cnn_gated_patch_moe2_gpol | 2 | Yes | Yes | 最少+政策 |
+
 > **多模态特点**：
 > - 政策特征维度：12 维（默认不编码，直接使用原始特征）
 > - 图像特征维度：64 维（投影后）
@@ -795,7 +869,7 @@ BERT 多模态实验在 `config_multimodal_bert.py` 中定义，三种政策来�
 > - 训练脚本 `train_multimodal_bert.py` 独立于 `train_multimodal.py`
 > - 结果按政策来源保存到不同子目录
 
-### 消融实验 [v3.3 新增]
+### 消融实验 [v3.3+]
 
 专门的消融实验脚本用于系统性比较：
 
@@ -804,7 +878,10 @@ BERT 多模态实验在 `config_multimodal_bert.py` 中定义，三种政策来�
 | `scripts/ablation/run_single_vs_multimodal.sh` | 单模态 vs 多模态 | 验证政策特征的增益 |
 | `scripts/ablation/run_policy_ablation.sh` | Structured vs BERT vs Hybrid | 2 模型 × 4 政策来源消融（24 实验） |
 | `scripts/ablation/run_policy_ablation_all_experiments.sh` | 完整政策消融 | 56 配置 × 4 政策 = 200 配置 × 3 种子（600 实验） |
+| `scripts/ablation/run_policy_ablation_all_experiments_reverse.sh` | 完整政策消融（反向） | 同上，反向执行顺序 [NEW v3.5] |
 | `scripts/run_missing_experiments.sh` | 补缺实验 | Gap Analysis 识别的 42 个缺失实验 |
+| `scripts/run_missing_experiments_reverse.sh` | 补缺实验（反向） | 同上，反向执行顺序 [NEW v3.5] |
+| `scripts/multimodal/run_moe_experiments.sh` | MoE 消融 | 6 配置 × 3 种子 = 18 实验 [NEW v3.5] |
 
 ---
 
@@ -901,7 +978,7 @@ BERT 多模态实验在 `config_multimodal_bert.py` 中定义，三种政策来�
 | `attention` | 跨模态自注意力 | `f = mean(MultiHeadAttn([img, policy]))` |
 | `film` | 特征调制 | `f = γ(policy) * img + β(policy)` |
 
-**新增方法 [v3.2]**:
+**新增方法 [v3.2+]**:
 
 | 方法 | 功能 |
 |-----|------|
@@ -909,8 +986,30 @@ BERT 多模态实验在 `config_multimodal_bert.py` 中定义，三种政策来�
 | `freeze_encoder()` | 冻结图像编码器参数 |
 | `unfreeze_encoder()` | 解冻图像编码器参数 |
 | `get_encoder()` | 获取图像编码器（用于预训练） |
+| `init_moe_from_single_head(state_dict)` | 从单头权重暖启动 MoE 专家 [NEW v3.5] |
 
 **参数量**: ~180K（LightCNN + concat 融合），~580K（LightCNN + transformer 聚合）
+
+### MoE Head (`models/multimodal.py::MoEHead`) [NEW v3.5]
+
+```
+融合特征 (batch, input_dim)
+    ↓
+┌─── 门控网络: Linear(gate_input_dim, K) → Softmax → 权重 w_k
+│
+├── Expert 1: Linear(input_dim, hidden) → ReLU → Dropout → Linear(hidden, 1)
+├── Expert 2: ...
+├── ...
+└── Expert K: ...
+    ↓
+output = Σ w_k × expert_k(x)
+```
+
+**负载均衡损失**：KL(Uniform || batch_mean(gate_weights))，鼓励所有专家在 batch 内均匀使用。
+
+**门控输入选项**：
+- `gate_use_policy=False`：门控仅看融合特征（dim=64）
+- `gate_use_policy=True`：门控看融合特征+政策特征（dim=64+12=76）
 
 ### BERT Policy Encoder (`policy_bert.py`) [NEW v3.3]
 
@@ -1012,6 +1111,7 @@ python train.py --exp mlp_baseline --gpu 3 --seed 42
 
 **复现机制**：
 - 数据划分：使用 seed 控制城市的 train/val/test 划分
+  - **v3.5 修复**：城市遍历顺序使用 `sorted()` 确保确定性，不再受 `PYTHONHASHSEED` 影响
 - DataLoader shuffle：使用 seed 控制每个 epoch 的数据顺序
 - 模型初始化：使用 seed 控制权重初始化
 - 训练过程：固定 `torch.backends.cudnn.deterministic = True`
@@ -1255,6 +1355,22 @@ python evaluate.py --exp <experiment_name> --split test
 python compare_results.py
 ```
 
+### 结果分析工具 [NEW v3.5]
+
+```bash
+# 综合结果分析（加载所有 pkl，多维度汇总，生成报告）
+python analyze_results_bd.py [--results-dir PATH]
+# 输出: analysis_detailed.csv, analysis_summary.csv, analysis_report.txt
+
+# 数据划分不一致性影响分析（量化 Python hash 随机化的影响）
+python analyze_split_impact.py
+# 输出: results/split_impact_report.txt
+
+# 论文数据校验（对比论文中引用的数值与实际结果）
+python compare_thesis_vs_resultsbd.py
+# 输出: results-bd/thesis_comparison.txt
+```
+
 ---
 
 ## 实验监控
@@ -1298,6 +1414,57 @@ requests>=2.28.0               # [NEW v3.3] 瓦片下载
 ---
 
 ## 更新日志
+
+### v3.5 (2026-02-28)
+
+**新增：Mixture of Experts 回归头、数据划分确定性修复、综合分析工具**
+
+#### MoE (Mixture of Experts) 回归头
+
+在多模态模型的融合特征之上，使用 K 个独立专家替代单一回归头：
+
+- **`models/multimodal.py`**: 新增 `MoEHead` 类
+  - 软路由：所有专家参与计算，门控网络 softmax 加权
+  - KL 负载均衡损失：鼓励专家在 batch 内均匀使用
+  - 门控可选使用政策特征（`gate_use_policy`）
+  - 暖启动支持：`init_moe_from_single_head()` 从单头权重初始化
+- **`config_multimodal.py`**: 6 个 MoE 实验配置
+  - 消融维度：专家数量（K=2/4/6）× 门控输入（融合/融合+政策）× 均衡损失（有/无）
+  - 全部基于 MAE + LightCNN + Gated + Patch-level
+- **`train_multimodal.py`**: MoE 训练流程集成
+  - 兼容 tuple 输出（`(output, gate_weights)`），非 MoE 模型不受影响
+  - 训练时叠加 balance loss，评估时忽略门控权重
+  - 新增 `analyze_moe_experts()` 收集逐样本门控权重用于可解释性分析
+- **`scripts/multimodal/run_moe_experiments.sh`**: MoE 批量运行脚本（6 × 3 = 18 实验）
+
+#### 数据划分确定性修复
+
+- **`dataset.py`**: `create_dataset_samples()` 和 `split_dataset()` 中的城市遍历顺序使用 `sorted()` 确保确定性
+  - 修复：Python `set` 和 `dict.keys()` 受 `PYTHONHASHSEED` 影响导致不同实验使用不同 train/val/test 划分
+  - 修复后：相同 seed 保证产生完全相同的数据划分
+
+#### 综合结果分析工具
+
+- **`analyze_results_bd.py`** (1025 行): 加载所有 pkl，按编码器/预训练/融合/训练模式/聚合/政策多维度汇总，生成 CSV + TXT 报告
+- **`analyze_split_impact.py`** (1258 行): 量化数据划分不一致性对实验结论的影响（城市重叠度、方差分解、Cohen's d 效应量）
+- **`compare_thesis_vs_resultsbd.py`** (1279 行): 从 `.tex` 文件提取数值与实际实验结果对比校验
+
+#### 实验脚本补充
+
+- **`scripts/ablation/run_policy_ablation_all_experiments_reverse.sh`**: 完整政策消融实验（反向执行顺序）
+- **`scripts/run_missing_experiments_reverse.sh`**: 补缺实验（反向执行顺序）
+
+#### Conda 环境更新
+
+- `run_policy_ablation_all_experiments.sh`: Conda 环境从 `alphaearth` 更新为 `alphaearth12`
+
+#### 实验数量
+
+- **新增 MoE 实验**: 6 个
+- **总多模态实验**: ~75 → ~81
+- **总实验配置**: ~305 → ~311
+
+---
 
 ### v3.3 (2026-02-06)
 

@@ -71,7 +71,12 @@ def create_multimodal_model(model_config, patch_level: bool = False):
         dropout=model_config.dropout_rate,
         patch_level=patch_level,
         use_policy_encoder=getattr(model_config, 'use_policy_encoder', False),
-        model_config=model_config  # Pass full config for encoder customization
+        model_config=model_config,  # Pass full config for encoder customization
+        use_moe=getattr(model_config, 'use_moe', False),
+        num_experts=getattr(model_config, 'num_experts', 4),
+        expert_hidden_dim=getattr(model_config, 'expert_hidden_dim', 32),
+        gate_use_policy=getattr(model_config, 'gate_use_policy', False),
+        moe_balance_loss=getattr(model_config, 'moe_balance_loss', True),
     )
 
 
@@ -163,6 +168,9 @@ class MultiModalTrainer:
         # Loss function
         self.criterion = nn.MSELoss()
 
+        # MoE balance loss weight
+        self.moe_balance_weight = getattr(exp_config.model_config, 'moe_balance_weight', 0.1)
+
         # Optimizer and scheduler
         self.optimizer = torch.optim.AdamW(
             model.parameters(),
@@ -235,7 +243,15 @@ class MultiModalTrainer:
 
             self.optimizer.zero_grad()
             outputs = self.model(patches, policy_feat)
-            loss = self.criterion(outputs, labels)
+
+            if isinstance(outputs, tuple):
+                outputs, gate_weights = outputs
+                loss = self.criterion(outputs, labels)
+                if hasattr(self.model, 'use_moe') and self.model.use_moe and self.model.regression_head.use_balance_loss:
+                    balance_loss = self.model.regression_head.compute_balance_loss(gate_weights)
+                    loss = loss + self.moe_balance_weight * balance_loss
+            else:
+                loss = self.criterion(outputs, labels)
 
             loss.backward()
             self.optimizer.step()
@@ -269,6 +285,8 @@ class MultiModalTrainer:
             labels = labels.to(self.device)
 
             outputs = self.model(patches, policy_feat)
+            if isinstance(outputs, tuple):
+                outputs, _ = outputs
             loss = self.criterion(outputs, labels)
 
             loss_meter.update(loss.item(), patches.size(0))
@@ -522,6 +540,8 @@ def evaluate_multimodal(model, data_loader, device, normalize_on_gpu: bool = Fal
             patches = _gpu_normalize_standalone(patches)
         policy_feat = policy_feat.to(device)
         outputs = model(patches, policy_feat)
+        if isinstance(outputs, tuple):
+            outputs, _ = outputs
 
         all_labels.append(labels.numpy())
         all_preds.append(outputs.cpu().numpy())
@@ -561,6 +581,8 @@ def evaluate_patch_level_multimodal(model, data_loader, device, num_patches: int
             patches = _gpu_normalize_standalone(patches)
         policy_feat = policy_feat.to(device)
         outputs = model(patches, policy_feat)
+        if isinstance(outputs, tuple):
+            outputs, _ = outputs
 
         batch_size = patches.size(0)
         for i in range(batch_size):
@@ -888,6 +910,17 @@ def run_multimodal_experiment(exp_name: str, gpu_id: int = 0, seed: int = config
             }
         }
 
+        # Add MoE metadata and expert analysis if applicable
+        if getattr(exp_config.model_config, 'use_moe', False):
+            results['use_moe'] = True
+            results['num_experts'] = exp_config.model_config.num_experts
+            results['gate_use_policy'] = exp_config.model_config.gate_use_policy
+            results['moe_balance_weight'] = getattr(exp_config.model_config, 'moe_balance_weight', 0.1)
+            # Collect per-sample gate weights for interpretability
+            moe_analysis = analyze_moe_experts(model, test_loader, device, normalize_on_gpu=normalize_on_gpu)
+            results['moe_expert_analysis'] = moe_analysis
+            logger.info(f"MoE expert analysis: {len(moe_analysis)} patch-level samples collected")
+
     else:
         # City-level
         val_y_true, val_y_pred, val_metrics, val_info = evaluate_multimodal(model, val_loader, device, normalize_on_gpu=normalize_on_gpu)
@@ -935,10 +968,69 @@ def run_multimodal_experiment(exp_name: str, gpu_id: int = 0, seed: int = config
             'test_info': test_info
         }
 
+        # Add MoE metadata and expert analysis if applicable
+        if getattr(exp_config.model_config, 'use_moe', False):
+            results['use_moe'] = True
+            results['num_experts'] = exp_config.model_config.num_experts
+            results['gate_use_policy'] = exp_config.model_config.gate_use_policy
+            results['moe_balance_weight'] = getattr(exp_config.model_config, 'moe_balance_weight', 0.1)
+            # Collect per-sample gate weights for interpretability
+            moe_analysis = analyze_moe_experts(model, test_loader, device, normalize_on_gpu=normalize_on_gpu)
+            results['moe_expert_analysis'] = moe_analysis
+            logger.info(f"MoE expert analysis: {len(moe_analysis)} city-level samples collected")
+
     results_path = os.path.join(config.RESULT_DIR, f'{run_id}_results.pkl')
     with open(results_path, 'wb') as f:
         pickle.dump(results, f)
     logger.info(f"Results saved to {results_path}")
+
+    return results
+
+
+@torch.no_grad()
+def analyze_moe_experts(model, data_loader, device, normalize_on_gpu: bool = False):
+    """Collect per-sample MoE gate weights for interpretability analysis.
+
+    Args:
+        model: MultiModalModel with use_moe=True
+        data_loader: DataLoader for evaluation data
+        device: Device to run on
+        normalize_on_gpu: Whether to normalize on GPU
+
+    Returns:
+        List of dicts with keys: 'city', 'year', 'label', 'pred', 'gate_weights'
+        (patch-level data also includes 'sample_idx', 'patch_idx')
+    """
+    model.eval()
+    results = []
+
+    for patches, policy_feat, labels, info in tqdm(data_loader, desc="Analyzing MoE experts"):
+        patches = patches.to(device)
+        if normalize_on_gpu:
+            patches = _gpu_normalize_standalone(patches)
+        policy_feat = policy_feat.to(device)
+
+        outputs = model(patches, policy_feat)
+        if isinstance(outputs, tuple):
+            outputs, gate_weights = outputs
+        else:
+            return []  # Not a MoE model
+
+        batch_size = patches.size(0)
+        for i in range(batch_size):
+            entry = {
+                'city': info['city'][i],
+                'year': info['year'][i].item() if torch.is_tensor(info['year'][i]) else info['year'][i],
+                'label': labels[i].item(),
+                'pred': outputs[i].item(),
+                'gate_weights': gate_weights[i].cpu().numpy(),
+            }
+            # Capture patch-level indices if available
+            if 'sample_idx' in info:
+                entry['sample_idx'] = info['sample_idx'][i].item() if torch.is_tensor(info['sample_idx'][i]) else info['sample_idx'][i]
+            if 'patch_idx' in info:
+                entry['patch_idx'] = info['patch_idx'][i].item() if torch.is_tensor(info['patch_idx'][i]) else info['patch_idx'][i]
+            results.append(entry)
 
     return results
 

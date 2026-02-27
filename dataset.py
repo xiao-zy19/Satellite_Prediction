@@ -567,7 +567,7 @@ def create_dataset_samples(
     sat_cities = set(satellite_data.keys())
     common_cities = pop_cities & sat_cities
 
-    for city in common_cities:
+    for city in sorted(common_cities):
         city_row = population_df[population_df['城市名称'] == city].iloc[0]
 
         for year, file_info in satellite_data[city].items():
@@ -612,7 +612,7 @@ def split_dataset(
                 city_samples[city] = []
             city_samples[city].append(s)
 
-        cities = list(city_samples.keys())
+        cities = sorted(city_samples.keys())
         random.shuffle(cities)
 
         n_cities = len(cities)
