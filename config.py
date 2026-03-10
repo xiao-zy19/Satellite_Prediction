@@ -737,6 +737,49 @@ EXPERIMENTS = {
         pretrain_config=MAEConfig(encoder_type="light_cnn"),
         use_pretrain=True
     ),
+
+    # ==========================================================================
+    # Residual Attention Aggregation Experiments (City-level)
+    # mean + gated attention correction: stable mean backbone with learned
+    # attention residual. Gate initialized to favor mean (~88%).
+    # ==========================================================================
+
+    # --- LightCNN with residual attention ---
+    "light_cnn_residual_attention": ExperimentConfig(
+        exp_name="light_cnn_residual_attention",
+        model_config=LightCNNConfig(aggregation="residual_attention"),
+        use_pretrain=False
+    ),
+
+    # --- MLP with residual attention ---
+    "mlp_residual_attention": ExperimentConfig(
+        exp_name="mlp_residual_attention",
+        model_config=MLPConfig(aggregation="residual_attention"),
+        use_pretrain=False
+    ),
+
+    # --- ResNet18 with residual attention ---
+    "resnet18_residual_attention": ExperimentConfig(
+        exp_name="resnet18_residual_attention",
+        model_config=ResNetConfig(model_name="resnet18", aggregation="residual_attention"),
+        use_pretrain=False
+    ),
+
+    # --- SimCLR + CNN with residual attention ---
+    "simclr_cnn_residual_attention": ExperimentConfig(
+        exp_name="simclr_cnn_residual_attention",
+        model_config=LightCNNConfig(aggregation="residual_attention"),
+        pretrain_config=SimCLRConfig(encoder_type="light_cnn"),
+        use_pretrain=True
+    ),
+
+    # --- MAE + CNN with residual attention ---
+    "mae_cnn_residual_attention": ExperimentConfig(
+        exp_name="mae_cnn_residual_attention",
+        model_config=LightCNNConfig(aggregation="residual_attention"),
+        pretrain_config=MAEConfig(encoder_type="light_cnn"),
+        use_pretrain=True
+    ),
 }
 
 

@@ -950,6 +950,55 @@ MULTIMODAL_EXPERIMENTS = {
         num_workers=2
     ),
 
+    # ==========================================================================
+    # Residual Attention Aggregation Experiments (City-level multimodal)
+    # mean + gated attention correction for patch aggregation
+    # ==========================================================================
+
+    # --- LightCNN + Concat + Residual Attention Aggregation ---
+    "mm_cnn_concat_residual_attn": MultiModalExperimentConfig(
+        exp_name="mm_cnn_concat_residual_attn",
+        model_config=MultiModalConfig(
+            image_encoder_type="light_cnn",
+            fusion_type="concat",
+            aggregation="residual_attention"
+        )
+    ),
+
+    # --- LightCNN + FiLM + Residual Attention Aggregation ---
+    "mm_cnn_film_residual_attn": MultiModalExperimentConfig(
+        exp_name="mm_cnn_film_residual_attn",
+        model_config=MultiModalConfig(
+            image_encoder_type="light_cnn",
+            fusion_type="film",
+            aggregation="residual_attention"
+        )
+    ),
+
+    # --- SimCLR + Concat + Residual Attention Aggregation ---
+    "mm_simclr_cnn_concat_residual_attn": MultiModalExperimentConfig(
+        exp_name="mm_simclr_cnn_concat_residual_attn",
+        model_config=MultiModalConfig(
+            image_encoder_type="light_cnn",
+            fusion_type="concat",
+            aggregation="residual_attention"
+        ),
+        pretrain_config=SimCLRConfig(encoder_type="light_cnn"),
+        use_pretrain=True
+    ),
+
+    # --- MAE + Concat + Residual Attention Aggregation ---
+    "mm_mae_cnn_concat_residual_attn": MultiModalExperimentConfig(
+        exp_name="mm_mae_cnn_concat_residual_attn",
+        model_config=MultiModalConfig(
+            image_encoder_type="light_cnn",
+            fusion_type="concat",
+            aggregation="residual_attention"
+        ),
+        pretrain_config=MAEConfig(encoder_type="light_cnn"),
+        use_pretrain=True
+    ),
+
     # --- Minimal + policy gate: K=2, gate_use_policy ---
     "mm_mae_cnn_gated_patch_moe2_gpol": MultiModalExperimentConfig(
         exp_name="mm_mae_cnn_gated_patch_moe2_gpol",

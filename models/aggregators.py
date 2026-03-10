@@ -11,6 +11,7 @@ Aggregation methods:
 4. pos_attention: Attention with learnable position embeddings
 5. spatial_attention: Attention with 2D spatial position encoding
 6. transformer: Full transformer with [CLS] token aggregation
+7. residual_attention: Mean + gated attention correction (stable hybrid)
 """
 
 import math
@@ -389,6 +390,77 @@ class Transformer2DAggregator(nn.Module):
         return out
 
 
+class ResidualAttentionAggregator(nn.Module):
+    """
+    Residual attention aggregation: mean + gated attention correction.
+
+    Core idea: mean aggregation as stable backbone, attention only learns
+    a correction term. The model defaults to mean and only deviates when
+    data supports it.
+
+        z = g * z_mean + (1 - g) * z_attn
+
+    where g = σ(w · [z_mean; z_attn] + b), initialized to favor mean
+    (bias=2.0 → σ(2.0) ≈ 0.88, so ~88% mean at init).
+
+    Design rationale for small-sample city-level prediction:
+    - Pure mean is stable but rigid (no learnable parameters)
+    - Pure attention is expressive but high-variance with ~422 train samples
+    - This design guarantees safe fallback to mean if attention learns nothing
+    """
+
+    def __init__(
+        self,
+        feature_dim: int,
+        hidden_dim: int = 64,
+        gate_bias_init: float = 2.0,
+        attn_dropout: float = 0.2,
+    ):
+        super().__init__()
+        self.feature_dim = feature_dim
+
+        # Attention branch (same architecture as AttentionAggregator)
+        self.attention = nn.Sequential(
+            nn.Linear(feature_dim, hidden_dim),
+            nn.Tanh(),
+            nn.Linear(hidden_dim, 1)
+        )
+        self.attn_dropout = nn.Dropout(attn_dropout)
+
+        # Scalar gate: g = σ(w · [z_mean; z_attn] + b)
+        # Using raw nn.Parameter instead of nn.Linear so that parent models'
+        # _init_weights() (which sweeps all nn.Linear with xavier_uniform_ +
+        # zero bias) won't overwrite our critical gate initialization.
+        # This is the key design guarantee: gate starts biased toward mean.
+        self.gate_weight = nn.Parameter(torch.zeros(1, feature_dim * 2))
+        self.gate_bias = nn.Parameter(torch.full((1,), gate_bias_init))
+
+    def forward(self, x):
+        """
+        Args:
+            x: (batch, num_patches, feature_dim)
+        Returns:
+            (batch, feature_dim)
+        """
+        # Mean branch (stable baseline)
+        z_mean = x.mean(dim=1)  # (batch, feature_dim)
+
+        # Attention branch
+        attn_weights = self.attention(x)  # (batch, num_patches, 1)
+        attn_weights = F.softmax(attn_weights, dim=1)
+        z_attn = (x * attn_weights).sum(dim=1)  # (batch, feature_dim)
+        z_attn = self.attn_dropout(z_attn)
+
+        # Scalar gate: high g -> favor mean
+        gate_input = torch.cat([z_mean, z_attn], dim=-1)  # (batch, feature_dim * 2)
+        g = torch.sigmoid(F.linear(gate_input, self.gate_weight, self.gate_bias))  # (batch, 1)
+
+        # Mix: g * mean + (1-g) * attention
+        z = g * z_mean + (1 - g) * z_attn
+
+        return z
+
+
 def get_aggregator(
     aggregation_type: str,
     feature_dim: int,
@@ -402,7 +474,8 @@ def get_aggregator(
 
     Args:
         aggregation_type: One of ["mean", "trimmed_mean", "attention",
-                          "pos_attention", "spatial_attention", "transformer", "transformer_2d"]
+                          "pos_attention", "spatial_attention", "transformer",
+                          "transformer_2d", "residual_attention"]
         feature_dim: Dimension of input features
         num_patches: Number of patches (default 25 for 5x5 grid)
         grid_size: Grid size for spatial aggregators (default 5)
@@ -454,10 +527,18 @@ def get_aggregator(
             dropout=dropout
         )
 
+    elif aggregation_type == "residual_attention":
+        return ResidualAttentionAggregator(
+            feature_dim=feature_dim,
+            hidden_dim=max(64, feature_dim // 2),
+            gate_bias_init=kwargs.get('gate_bias_init', 2.0),
+            attn_dropout=kwargs.get('attn_dropout', 0.2),
+        )
+
     else:
         raise ValueError(f"Unknown aggregation type: {aggregation_type}. "
                         f"Available: mean, median, trimmed_mean, attention, pos_attention, "
-                        f"spatial_attention, transformer, transformer_2d")
+                        f"spatial_attention, transformer, transformer_2d, residual_attention")
 
 
 # =============================================================================
@@ -482,6 +563,7 @@ if __name__ == "__main__":
         ("spatial_attention", SpatialPositionAggregator(feature_dim, grid_size=5)),
         ("transformer", TransformerAggregator(feature_dim, num_patches)),
         ("transformer_2d", Transformer2DAggregator(feature_dim, grid_size=5)),
+        ("residual_attention", ResidualAttentionAggregator(feature_dim)),
     ]
 
     print(f"\n{'Aggregator':<20} {'Parameters':>12} {'Output Shape':>15}")
@@ -498,7 +580,7 @@ if __name__ == "__main__":
     print("Testing Factory Function")
     print("=" * 70)
 
-    for agg_type in ["attention", "pos_attention", "spatial_attention", "transformer", "transformer_2d"]:
+    for agg_type in ["attention", "pos_attention", "spatial_attention", "transformer", "transformer_2d", "residual_attention"]:
         agg = get_aggregator(agg_type, feature_dim, num_patches)
         with torch.no_grad():
             out = agg(x)

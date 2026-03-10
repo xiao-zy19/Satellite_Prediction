@@ -41,7 +41,7 @@ SESSION_NAME="missing_exp_rev"
 
 # Conda 环境
 CONDA_BASE="/share_data/data101/xiaozhenyu/anaconda3"
-CONDA_ENV="alphaearth"
+CONDA_ENV="alphaearth12"
 
 # 创建目录
 mkdir -p "$LOG_DIR"

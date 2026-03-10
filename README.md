@@ -4,6 +4,8 @@
 
 本项目比较了不同模型架构（MLP、LightCNN、ResNet、**Multimodal**、**Multimodal-BERT**）和不同预训练策略（无预训练、SimCLR、MAE、ImageNet）对人口增长率预测性能的影响。
 
+**v3.6 新增**: Residual Attention Aggregation（mean + 门控注意力校正），新增 9 个实验配置（5 单模态 + 4 多模态）。
+
 **v3.5 新增**: Mixture of Experts (MoE) 回归头，支持多专家软路由与负载均衡；修复数据划分确定性问题；新增综合结果分析工具。
 
 **v3.3 新增**: BERT 政策文本嵌入系统（chinese-roberta-wwm-ext），支持三种政策来源（structured/bert/hybrid）；预训练数据提取与瓦片补全管线；消融实验脚本。
@@ -49,7 +51,7 @@ Baseline_Pretrain/
 │   ├── mlp_model.py               # MLP 模型
 │   ├── light_cnn.py               # 轻量级 CNN 模型
 │   ├── resnet_baseline.py         # ResNet 基线模型
-│   ├── aggregators.py             # 位置感知聚合模块
+│   ├── aggregators.py             # 位置感知聚合模块（含 residual_attention）
 │   ├── multimodal.py              # 多模态融合模型
 │   └── multimodal_bert.py         # BERT 多模态模型工厂 [NEW v3.3]
 ├── pretrain/
@@ -78,7 +80,9 @@ Baseline_Pretrain/
 │   │   ├── run_single_vs_multimodal.sh  # 单模态 vs 多模态消融
 │   │   ├── run_policy_ablation.sh       # 政策来源消融（2模型 × 4政策）
 │   │   ├── run_policy_ablation_all_experiments.sh  # 完整政策消融（56配置 × 4政策 = 200配置 × 3种子 = 600实验）
-│   │   └── run_policy_ablation_all_experiments_reverse.sh  # 完整政策消融（反向顺序）[NEW v3.5]
+│   │   ├── run_policy_ablation_all_experiments_reverse.sh  # 完整政策消融（反向顺序）[NEW v3.5]
+│   │   ├── run_residual_attention_experiments.sh  # Residual Attention 消融实验 [NEW v3.6]
+│   │   └── run_missing_patch_experiments.sh  # 补缺 Patch 实验 [NEW v3.6]
 │   ├── run_missing_experiments.sh       # 补缺实验脚本（Gap Analysis 生成）
 │   ├── run_missing_experiments_reverse.sh  # 补缺实验（反向顺序）[NEW v3.5]
 │   └── utils/                     # 工具脚本
@@ -152,6 +156,25 @@ python train.py --exp resnet18_imagenet_trimmed_mean --gpu 3
 
 # 位置感知聚合实验
 python train.py --exp light_cnn_transformer_2d --gpu 3
+
+# ============================================
+# Residual Attention Aggregation 实验 [NEW v3.6]
+# ============================================
+
+# 单模态 residual attention
+python train.py --exp light_cnn_residual_attention --gpu 3
+python train.py --exp resnet18_residual_attention --gpu 3
+
+# 预训练 + residual attention
+python train.py --exp simclr_cnn_residual_attention --gpu 3
+python train.py --exp mae_cnn_residual_attention --gpu 3
+
+# 多模态 residual attention
+python train_multimodal_bert.py --exp mm_cnn_concat_residual_attn --gpu 3
+python train_multimodal_bert.py --exp mm_cnn_film_residual_attn --gpu 3
+
+# 批量运行 residual attention 消融实验 (9配置 × 3种子 = 27 runs)
+bash scripts/ablation/run_residual_attention_experiments.sh 0   # 在 GPU 0 上运行
 
 # ============================================
 # 多模态实验（卫星图像 + 政策特征）[NEW]
@@ -394,7 +417,7 @@ python run_extraction.py
 
 **模型聚合方式可选**:
 - **基础聚合**: mean, median, trimmed_mean（无额外参数）
-- **高级聚合**: attention, pos_attention, spatial_attention, transformer, transformer_2d（有可学习参数）
+- **高级聚合**: attention, pos_attention, spatial_attention, transformer, transformer_2d, residual_attention（有可学习参数）
 
 **特点**:
 - **训练和评估聚合一致**：模型使用什么聚合训练，就用什么聚合评估
@@ -501,34 +524,35 @@ K 个专家头: 各自 Linear(64, 32) → ReLU → Dropout → Linear(32, 1) →
 
 ## 实验总览
 
-当前共有 **约 311 个实验配置**（基础模型 80 + 多模态 ~81 + BERT 多模态 ~150），按模型类型组织如下：
+当前共有 **约 320 个实验配置**（基础模型 85 + 多模态 ~85 + BERT 多模态 ~150），按模型类型组织如下：
 
-### 基础模型实验（80 个）
+### 基础模型实验（85 个）
 
 | 模型 | 无预训练 | SimCLR | MAE | ImageNet | 总计 |
 |------|---------|--------|-----|----------|------|
-| MLP | 9 | 3 | - | - | 12 |
-| LightCNN | 9 | 9 | 9 | - | 27 |
+| MLP | 10 | 3 | - | - | 13 |
+| LightCNN | 10 | 10 | 10 | - | 30 |
 | ResNet10 | 4 | - | - | - | 4 |
-| ResNet18 | 9 | - | - | 4 | 13 |
+| ResNet18 | 10 | - | - | 4 | 14 |
 | ResNet34 | 4 | - | - | 4 | 8 |
 | ResNet50 | 4 | - | - | 4 | 8 |
 | ResNet101 | 4 | - | - | 4 | 8 |
-| **总计** | **43** | **12** | **9** | **16** | **80** |
+| **总计** | **46** | **13** | **10** | **16** | **85** |
 
-### 多模态实验（~81 个）[v3.5 扩展]
+### 多模态实验（~85 个）[v3.6 扩展]
 
 | 类别 | 描述 | 实验数量 |
 |------|------|---------|
 | **基础多模态** | LightCNN/MLP/ResNet + 4种融合策略 | 21 |
 | **位置感知聚合** | Transformer/2D Transformer 聚合 | 12 |
+| **Residual Attention** | mean + 门控注意力校正聚合 | 4 |
 | **SimCLR 预训练** | 自监督对比学习 + 多模态微调 | 10 |
 | **MAE 预训练** | 掩码自编码器 + 多模态微调 | 8 |
 | **ResNet 深度扩展** | ResNet10/34/50/101 变体 | 11 |
 | **Patch-level** | 包含预训练的 Patch-level 实验 | 6 |
 | **MoE 回归头** | Mixture of Experts 消融实验 | 6 |
 | **自定义模型** | 小型 LightCNN 等 | 1 |
-| **总计** | - | **~81** |
+| **总计** | - | **~85** |
 
 #### 详细分类
 
@@ -554,7 +578,7 @@ K 个专家头: 各自 Linear(64, 32) → ReLU → Dropout → Linear(32, 1) →
 
 > **聚合方式说明**：
 > - **基础聚合**：mean、median、trimmed_mean（无额外参数）
-> - **高级聚合**：attention、pos_attention、spatial_attention、transformer、transformer_2d（有可学习参数）
+> - **高级聚合**：attention、pos_attention、spatial_attention、transformer、transformer_2d、residual_attention（有可学习参数）
 > - **City-level**：训练和评估使用相同聚合方式
 > - **Patch-level**：评估时自动测试 3 种基础聚合方式
 
@@ -573,53 +597,61 @@ K 个专家头: 各自 Linear(64, 32) → ReLU → Dropout → Linear(32, 1) →
 | 8 | mlp_transformer | transformer | city_level | 461K |
 | 9 | mlp_transformer_2d | transformer_2d | city_level | 475K |
 
+#### 无预训练 - Residual Attention [NEW v3.6]
+| # | 实验名称 | 模型聚合 | 模式 | 参数量 |
+|---|----------|----------|------|--------|
+| 10 | mlp_residual_attention | residual_attention | city_level | ~69K |
+
 #### SimCLR 预训练（3个）
 | # | 实验名称 | 模型聚合 | 模式 | 参数量 |
 |---|----------|----------|------|--------|
-| 10 | simclr_mlp | mean | city_level | 60.8K |
-| 11 | simclr_mlp_median | median | city_level | 60.8K |
-| 12 | simclr_mlp_trimmed_mean | trimmed_mean | city_level | 60.8K |
+| 11 | simclr_mlp | mean | city_level | 60.8K |
+| 12 | simclr_mlp_median | median | city_level | 60.8K |
+| 13 | simclr_mlp_trimmed_mean | trimmed_mean | city_level | 60.8K |
 
-### 2. LightCNN 系列（27个）
+### 2. LightCNN 系列（30个）
 
-#### 无预训练（9个）
+#### 无预训练（10个）
 | # | 实验名称 | 模型聚合 | 模式 | 参数量 |
 |---|----------|----------|------|--------|
-| 13 | light_cnn_baseline | mean | city_level | 160.6K |
-| 14 | light_cnn_median | median | city_level | 160.6K |
-| 15 | light_cnn_trimmed_mean | trimmed_mean | city_level | 160.6K |
-| 16 | light_cnn_patch_level | - | patch_level | 160.6K |
-| 17 | light_cnn_attention | attention | city_level | 168.9K |
-| 18 | light_cnn_pos_attention | pos_attention | city_level | 246.6K |
-| 19 | light_cnn_spatial_attention | spatial_attention | city_level | 380.2K |
-| 20 | light_cnn_transformer | transformer | city_level | 560.8K |
-| 21 | light_cnn_transformer_2d | transformer_2d | city_level | 574.8K |
+| 14 | light_cnn_baseline | mean | city_level | 160.6K |
+| 15 | light_cnn_median | median | city_level | 160.6K |
+| 16 | light_cnn_trimmed_mean | trimmed_mean | city_level | 160.6K |
+| 17 | light_cnn_patch_level | - | patch_level | 160.6K |
+| 18 | light_cnn_attention | attention | city_level | 168.9K |
+| 19 | light_cnn_pos_attention | pos_attention | city_level | 246.6K |
+| 20 | light_cnn_spatial_attention | spatial_attention | city_level | 380.2K |
+| 21 | light_cnn_transformer | transformer | city_level | 560.8K |
+| 22 | light_cnn_transformer_2d | transformer_2d | city_level | 574.8K |
+| 23 | light_cnn_residual_attention | residual_attention | city_level | ~169K |
 
-#### SimCLR 预训练（9个）
+#### SimCLR 预训练（10个）
 | # | 实验名称 | 模型聚合 | 模式 | 参数量 |
 |---|----------|----------|------|--------|
-| 22 | simclr_cnn | mean | city_level | 160.6K |
-| 23 | simclr_cnn_median | median | city_level | 160.6K |
-| 24 | simclr_cnn_trimmed_mean | trimmed_mean | city_level | 160.6K |
-| 25 | simclr_cnn_patch_level | - | patch_level | 160.6K |
-| 26 | simclr_cnn_attention | attention | city_level | 168.9K |
-| 27 | simclr_cnn_pos_attention | pos_attention | city_level | 246.6K |
-| 28 | simclr_cnn_spatial_attention | spatial_attention | city_level | 380.2K |
-| 29 | simclr_cnn_transformer | transformer | city_level | 560.8K |
-| 30 | simclr_cnn_transformer_2d | transformer_2d | city_level | 574.8K |
+| 24 | simclr_cnn | mean | city_level | 160.6K |
+| 25 | simclr_cnn_median | median | city_level | 160.6K |
+| 26 | simclr_cnn_trimmed_mean | trimmed_mean | city_level | 160.6K |
+| 27 | simclr_cnn_patch_level | - | patch_level | 160.6K |
+| 28 | simclr_cnn_attention | attention | city_level | 168.9K |
+| 29 | simclr_cnn_pos_attention | pos_attention | city_level | 246.6K |
+| 30 | simclr_cnn_spatial_attention | spatial_attention | city_level | 380.2K |
+| 31 | simclr_cnn_transformer | transformer | city_level | 560.8K |
+| 32 | simclr_cnn_transformer_2d | transformer_2d | city_level | 574.8K |
+| 33 | simclr_cnn_residual_attention | residual_attention | city_level | ~169K |
 
-#### MAE 预训练（9个）
+#### MAE 预训练（10个）
 | # | 实验名称 | 模型聚合 | 模式 | 参数量 |
 |---|----------|----------|------|--------|
-| 31 | mae_cnn | mean | city_level | 160.6K |
-| 32 | mae_cnn_median | median | city_level | 160.6K |
-| 33 | mae_cnn_trimmed_mean | trimmed_mean | city_level | 160.6K |
-| 34 | mae_cnn_patch_level | - | patch_level | 160.6K |
-| 35 | mae_cnn_attention | attention | city_level | 168.9K |
-| 36 | mae_cnn_pos_attention | pos_attention | city_level | 246.6K |
-| 37 | mae_cnn_spatial_attention | spatial_attention | city_level | 380.2K |
-| 38 | mae_cnn_transformer | transformer | city_level | 560.8K |
-| 39 | mae_cnn_transformer_2d | transformer_2d | city_level | 574.8K |
+| 34 | mae_cnn | mean | city_level | 160.6K |
+| 35 | mae_cnn_median | median | city_level | 160.6K |
+| 36 | mae_cnn_trimmed_mean | trimmed_mean | city_level | 160.6K |
+| 37 | mae_cnn_patch_level | - | patch_level | 160.6K |
+| 38 | mae_cnn_attention | attention | city_level | 168.9K |
+| 39 | mae_cnn_pos_attention | pos_attention | city_level | 246.6K |
+| 40 | mae_cnn_spatial_attention | spatial_attention | city_level | 380.2K |
+| 41 | mae_cnn_transformer | transformer | city_level | 560.8K |
+| 42 | mae_cnn_transformer_2d | transformer_2d | city_level | 574.8K |
+| 43 | mae_cnn_residual_attention | residual_attention | city_level | ~169K |
 
 ### 3. ResNet 系列（41个）
 
@@ -634,19 +666,20 @@ K 个专家头: 各自 Linear(64, 32) → ReLU → Dropout → Linear(32, 1) →
 #### ResNet18（~11.8M 参数）
 | # | 实验名称 | 模型聚合 | 模式 | 预训练 |
 |---|----------|----------|------|--------|
-| 44 | resnet18_baseline | mean | city_level | None |
-| 45 | resnet18_median | median | city_level | None |
-| 46 | resnet18_trimmed_mean | trimmed_mean | city_level | None |
-| 47 | resnet18_imagenet | mean | city_level | ImageNet |
-| 48 | resnet18_imagenet_median | median | city_level | ImageNet |
-| 49 | resnet18_imagenet_trimmed_mean | trimmed_mean | city_level | ImageNet |
-| 50 | resnet18_patch_level | - | patch_level | None |
-| 51 | resnet18_imagenet_patch_level | - | patch_level | ImageNet |
-| 52 | resnet18_attention | attention | city_level | None |
-| 53 | resnet18_pos_attention | pos_attention | city_level | None |
-| 54 | resnet18_spatial_attention | spatial_attention | city_level | None |
-| 55 | resnet18_transformer | transformer | city_level | None |
-| 56 | resnet18_transformer_2d | transformer_2d | city_level | None |
+| 47 | resnet18_baseline | mean | city_level | None |
+| 48 | resnet18_median | median | city_level | None |
+| 49 | resnet18_trimmed_mean | trimmed_mean | city_level | None |
+| 50 | resnet18_imagenet | mean | city_level | ImageNet |
+| 51 | resnet18_imagenet_median | median | city_level | ImageNet |
+| 52 | resnet18_imagenet_trimmed_mean | trimmed_mean | city_level | ImageNet |
+| 53 | resnet18_patch_level | - | patch_level | None |
+| 54 | resnet18_imagenet_patch_level | - | patch_level | ImageNet |
+| 55 | resnet18_attention | attention | city_level | None |
+| 56 | resnet18_pos_attention | pos_attention | city_level | None |
+| 57 | resnet18_spatial_attention | spatial_attention | city_level | None |
+| 58 | resnet18_transformer | transformer | city_level | None |
+| 59 | resnet18_transformer_2d | transformer_2d | city_level | None |
+| 60 | resnet18_residual_attention | residual_attention | city_level | None |
 
 #### ResNet34（~21.9M 参数）
 | # | 实验名称 | 模型聚合 | 模式 | 预训练 |
@@ -812,7 +845,18 @@ K 个专家头: 各自 Linear(64, 32) → ReLU → Dropout → Linear(32, 1) →
 |---|----------|------|
 | 138 | mm_cnn_small_concat | 小型 LightCNN (channels=[16,32,64]) |
 
-#### 4.8 MoE (Mixture of Experts) 实验 [NEW v3.5]
+#### 4.8 Residual Attention Aggregation 实验 [NEW v3.6]
+
+> mean + 门控注意力校正：稳定的 mean 作为基底，注意力只学习修正项。门控初始偏置 2.0（σ≈0.88，默认 88% 走 mean）。
+
+| # | 实验名称 | 图像编码器 | 融合策略 | 预训练 |
+|---|----------|-----------|----------|--------|
+| 145 | mm_cnn_concat_residual_attn | LightCNN | concat | None |
+| 146 | mm_cnn_film_residual_attn | LightCNN | film | None |
+| 147 | mm_simclr_cnn_concat_residual_attn | LightCNN | concat | SimCLR |
+| 148 | mm_mae_cnn_concat_residual_attn | LightCNN | concat | MAE |
+
+#### 4.9 MoE (Mixture of Experts) 实验 [NEW v3.5]
 
 > 所有 MoE 实验基于 MAE + LightCNN + Gated + Patch-level 配置
 
@@ -882,6 +926,8 @@ BERT 多模态实验在 `config_multimodal_bert.py` 中定义，三种政策来�
 | `scripts/run_missing_experiments.sh` | 补缺实验 | Gap Analysis 识别的 42 个缺失实验 |
 | `scripts/run_missing_experiments_reverse.sh` | 补缺实验（反向） | 同上，反向执行顺序 [NEW v3.5] |
 | `scripts/multimodal/run_moe_experiments.sh` | MoE 消融 | 6 配置 × 3 种子 = 18 实验 [NEW v3.5] |
+| `scripts/ablation/run_residual_attention_experiments.sh` | Residual Attention 消融 | 9 配置 × 3 种子 = 27 实验 [NEW v3.6] |
+| `scripts/ablation/run_missing_patch_experiments.sh` | 补缺 Patch 实验 | Patch-level 补缺实验 [NEW v3.6] |
 
 ---
 
@@ -942,6 +988,7 @@ BERT 多模态实验在 `config_multimodal_bert.py` 中定义，三种政策来�
 | `spatial_attention` | 高级 | 2D | ~220K | 2D 行列位置编码 + 注意力 |
 | `transformer` | 高级 | 1D | ~400K | [CLS] Token + Transformer |
 | `transformer_2d` | 高级 | 2D | ~414K | 2D 位置 + [CLS] + Transformer |
+| `residual_attention` | 高级 | - | ~8.6K | mean + 门控注意力校正（稳定混合）[NEW v3.6] |
 
 ### Multimodal Model (`models/multimodal.py`) [v3.2 扩展]
 
@@ -955,7 +1002,7 @@ BERT 多模态实验在 `config_multimodal_bert.py` 中定义，三种政策来�
     ↓
 图像编码器 (LightCNN/MLP/ResNet) [可加载预训练权重]
     ↓ encoder_dim (128)
-聚合层 (mean/median/trimmed_mean/attention/transformer/transformer_2d/...)
+聚合层 (mean/median/trimmed_mean/attention/transformer/transformer_2d/residual_attention/...)
     ↓ 图像特征 (batch, 128)
     ↓ 投影 → (batch, 64)
     ↓
@@ -1415,6 +1462,49 @@ requests>=2.28.0               # [NEW v3.3] 瓦片下载
 
 ## 更新日志
 
+### v3.6 (2026-03-11)
+
+**新增：Residual Attention Aggregation（mean + 门控注意力校正）**
+
+#### Residual Attention Aggregator
+
+在 patch 聚合层引入 mean + 门控注意力校正机制，兼顾稳定性与表达能力：
+
+- **`models/aggregators.py`**: 新增 `ResidualAttentionAggregator` 类
+  - 核心公式：`z = g * z_mean + (1-g) * z_attn`，其中 `g = σ(w·[z_mean; z_attn] + b)`
+  - 门控偏置初始化为 2.0（σ(2.0) ≈ 0.88），模型默认 88% 走 mean 聚合
+  - 门控使用 `nn.Parameter` 而非 `nn.Linear`，防止父模型 `_init_weights()` 覆盖关键初始化
+  - attention 分支独立 dropout=0.2
+  - 参数量：~8.6K（128d），仅比纯 attention 聚合多 ~257 参数
+  - 工厂函数 `get_aggregator()` 同步支持 `"residual_attention"` 类型
+- **`config.py`**: 新增 5 个单模态 Residual Attention 实验配置
+  - `light_cnn_residual_attention` / `mlp_residual_attention` / `resnet18_residual_attention`
+  - `simclr_cnn_residual_attention`（SimCLR 预训练）
+  - `mae_cnn_residual_attention`（MAE 预训练）
+- **`config_multimodal.py`**: 新增 4 个多模态 Residual Attention 实验配置
+  - `mm_cnn_concat_residual_attn` / `mm_cnn_film_residual_attn`（LightCNN + Concat/FiLM）
+  - `mm_simclr_cnn_concat_residual_attn`（SimCLR 预训练）
+  - `mm_mae_cnn_concat_residual_attn`（MAE 预训练）
+
+#### 实验脚本
+
+- **`scripts/ablation/run_residual_attention_experiments.sh`** (481 行): Residual Attention 消融实验（9 配置 × 3 种子 = 27 实验）
+- **`scripts/ablation/run_missing_patch_experiments.sh`** (502 行): 补缺 Patch-level 实验
+
+#### Conda 环境更新
+
+- `run_missing_experiments.sh` / `run_missing_experiments_reverse.sh`: Conda 环境从 `alphaearth` 更新为 `alphaearth12`
+- `run_missing_experiments.sh`: 注释掉已完成的 3 个 SimCLR 城市级基准实验
+
+#### 实验数量
+
+- **新增实验**: 9 个（5 单模态 + 4 多模态）
+- **总基础模型实验**: 80 → 85
+- **总多模态实验**: ~81 → ~85
+- **总实验配置**: ~311 → ~320
+
+---
+
 ### v3.5 (2026-02-28)
 
 **新增：Mixture of Experts 回归头、数据划分确定性修复、综合分析工具**
@@ -1462,7 +1552,7 @@ requests>=2.28.0               # [NEW v3.3] 瓦片下载
 
 - **新增 MoE 实验**: 6 个
 - **总多模态实验**: ~75 → ~81
-- **总实验配置**: ~305 → ~311
+- **总实验配置**: ~305 → ~311 (基础 80 + 多模态 ~81 + BERT ~150)
 
 ---
 
