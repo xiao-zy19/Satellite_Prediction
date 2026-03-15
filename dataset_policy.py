@@ -37,7 +37,8 @@ class CityPolicyDataset(Dataset):
         augment: bool = False,
         use_preprocessed: bool = True,
         normalize_policy: bool = True,
-        normalize_on_gpu: bool = False
+        normalize_on_gpu: bool = False,
+        policy_lag: int = 1
     ):
         """
         Args:
@@ -48,6 +49,7 @@ class CityPolicyDataset(Dataset):
             use_preprocessed: Use preprocessed npy files if available
             normalize_policy: Whether to normalize policy features
             normalize_on_gpu: If True, skip CPU normalization (will be done on GPU during training)
+            policy_lag: Policy temporal lag in years (default: 1)
         """
         self.samples = samples
         self.patch_size = patch_size
@@ -58,7 +60,7 @@ class CityPolicyDataset(Dataset):
         self.normalize_on_gpu = normalize_on_gpu
 
         # Initialize policy extractor
-        self.policy_extractor = get_policy_extractor()
+        self.policy_extractor = get_policy_extractor(policy_lag=policy_lag)
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -175,7 +177,8 @@ class PatchLevelPolicyDataset(Dataset):
         augment: bool = False,
         use_preprocessed: bool = True,
         normalize_policy: bool = True,
-        normalize_on_gpu: bool = False
+        normalize_on_gpu: bool = False,
+        policy_lag: int = 1
     ):
         self.samples = samples
         self.patch_size = patch_size
@@ -193,7 +196,7 @@ class PatchLevelPolicyDataset(Dataset):
                 self.index_mapping.append((sample_idx, patch_idx))
 
         # Initialize policy extractor
-        self.policy_extractor = get_policy_extractor()
+        self.policy_extractor = get_policy_extractor(policy_lag=policy_lag)
 
         print(f"PatchLevelPolicyDataset: {len(samples)} city-years -> {len(self.index_mapping)} patch samples")
 
@@ -325,7 +328,8 @@ def get_policy_dataloaders(
     num_workers: int = 4,
     augment_train: bool = True,
     seed: int = config.RANDOM_SEED,
-    normalize_on_gpu: bool = False
+    normalize_on_gpu: bool = False,
+    policy_lag: int = 1
 ) -> Tuple[DataLoader, DataLoader, DataLoader, Dict]:
     """
     Create train, validation, and test dataloaders with policy features (city-level).
@@ -336,6 +340,7 @@ def get_policy_dataloaders(
         augment_train: Whether to augment training data
         seed: Random seed for reproducibility
         normalize_on_gpu: If True, skip CPU normalization (will be done on GPU during training)
+        policy_lag: Policy temporal lag in years (default: 1)
 
     Returns:
         train_loader, val_loader, test_loader, dataset_info
@@ -361,9 +366,9 @@ def get_policy_dataloaders(
     if normalize_on_gpu:
         print("  [GPU Normalization ENABLED] - CPU normalization will be skipped")
 
-    train_dataset = CityPolicyDataset(train_samples, augment=augment_train, normalize_on_gpu=normalize_on_gpu)
-    val_dataset = CityPolicyDataset(val_samples, augment=False, normalize_on_gpu=normalize_on_gpu)
-    test_dataset = CityPolicyDataset(test_samples, augment=False, normalize_on_gpu=normalize_on_gpu)
+    train_dataset = CityPolicyDataset(train_samples, augment=augment_train, normalize_on_gpu=normalize_on_gpu, policy_lag=policy_lag)
+    val_dataset = CityPolicyDataset(val_samples, augment=False, normalize_on_gpu=normalize_on_gpu, policy_lag=policy_lag)
+    test_dataset = CityPolicyDataset(test_samples, augment=False, normalize_on_gpu=normalize_on_gpu, policy_lag=policy_lag)
 
     g = torch.Generator()
     g.manual_seed(seed)
@@ -409,7 +414,8 @@ def get_policy_dataloaders(
         'test_samples': test_samples,
         'policy_feature_dim': 12,
         'seed': seed,
-        'normalize_on_gpu': normalize_on_gpu
+        'normalize_on_gpu': normalize_on_gpu,
+        'policy_lag': policy_lag
     }
 
     return train_loader, val_loader, test_loader, dataset_info
@@ -420,7 +426,8 @@ def get_patch_level_policy_dataloaders(
     num_workers: int = 4,
     augment_train: bool = True,
     seed: int = config.RANDOM_SEED,
-    normalize_on_gpu: bool = False
+    normalize_on_gpu: bool = False,
+    policy_lag: int = 1
 ) -> Tuple[DataLoader, DataLoader, DataLoader, Dict]:
     """
     Create patch-level dataloaders with policy features.
@@ -431,6 +438,7 @@ def get_patch_level_policy_dataloaders(
         augment_train: Whether to augment training data
         seed: Random seed for reproducibility
         normalize_on_gpu: If True, skip CPU normalization (will be done on GPU during training)
+        policy_lag: Policy temporal lag in years (default: 1)
 
     Returns:
         train_loader, val_loader, test_loader, dataset_info
@@ -456,9 +464,9 @@ def get_patch_level_policy_dataloaders(
     if normalize_on_gpu:
         print("  [GPU Normalization ENABLED] - CPU normalization will be skipped")
 
-    train_dataset = PatchLevelPolicyDataset(train_samples, augment=augment_train, normalize_on_gpu=normalize_on_gpu)
-    val_dataset = PatchLevelPolicyDataset(val_samples, augment=False, normalize_on_gpu=normalize_on_gpu)
-    test_dataset = PatchLevelPolicyDataset(test_samples, augment=False, normalize_on_gpu=normalize_on_gpu)
+    train_dataset = PatchLevelPolicyDataset(train_samples, augment=augment_train, normalize_on_gpu=normalize_on_gpu, policy_lag=policy_lag)
+    val_dataset = PatchLevelPolicyDataset(val_samples, augment=False, normalize_on_gpu=normalize_on_gpu, policy_lag=policy_lag)
+    test_dataset = PatchLevelPolicyDataset(test_samples, augment=False, normalize_on_gpu=normalize_on_gpu, policy_lag=policy_lag)
 
     g = torch.Generator()
     g.manual_seed(seed)
@@ -509,7 +517,8 @@ def get_patch_level_policy_dataloaders(
         'training_mode': 'patch_level',
         'policy_feature_dim': 12,
         'seed': seed,
-        'normalize_on_gpu': normalize_on_gpu
+        'normalize_on_gpu': normalize_on_gpu,
+        'policy_lag': policy_lag
     }
 
     return train_loader, val_loader, test_loader, dataset_info

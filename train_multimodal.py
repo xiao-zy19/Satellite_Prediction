@@ -670,7 +670,8 @@ def evaluate_patch_level_multimodal(model, data_loader, device, num_patches: int
     return results
 
 
-def run_multimodal_experiment(exp_name: str, gpu_id: int = 0, seed: int = config.RANDOM_SEED, normalize_on_gpu: bool = False):
+def run_multimodal_experiment(exp_name: str, gpu_id: int = 0, seed: int = config.RANDOM_SEED,
+                              normalize_on_gpu: bool = False, policy_lag: int = 1, result_dir: str = None):
     """Run a single multimodal experiment.
 
     Args:
@@ -678,6 +679,8 @@ def run_multimodal_experiment(exp_name: str, gpu_id: int = 0, seed: int = config
         gpu_id: GPU device ID to use
         seed: Random seed for reproducibility
         normalize_on_gpu: If True, perform normalization on GPU instead of CPU
+        policy_lag: Policy temporal lag in years (default: 1)
+        result_dir: Override result save directory (default: config.RESULT_DIR)
     """
     # Set GPU
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
@@ -687,14 +690,17 @@ def run_multimodal_experiment(exp_name: str, gpu_id: int = 0, seed: int = config
     print_multimodal_config(exp_config)
 
     # Create run_id
+    lag_suffix = f"_lag{policy_lag}" if policy_lag != 1 else ""
     if seed != config.RANDOM_SEED:
-        run_id = f"{exp_name}_seed{seed}"
+        run_id = f"{exp_name}{lag_suffix}_seed{seed}"
     else:
-        run_id = exp_name
+        run_id = f"{exp_name}{lag_suffix}"
 
     # Set seed
     print(f"Setting random seed: {seed}")
     print(f"Run ID: {run_id}")
+    if policy_lag != 1:
+        print(f"[Policy Lag: {policy_lag} year(s)]")
     if normalize_on_gpu:
         print("[GPU Normalization ENABLED]")
     set_seed(seed)
@@ -765,12 +771,15 @@ def run_multimodal_experiment(exp_name: str, gpu_id: int = 0, seed: int = config
     # Load Multimodal Data
     # ==========================================================================
     logger.info("Loading data with policy features...")
+    if policy_lag != 1:
+        logger.info(f"Policy temporal lag: {policy_lag} year(s)")
     if is_patch_level:
         train_loader, val_loader, test_loader, dataset_info = get_patch_level_policy_dataloaders(
             batch_size=exp_config.train_config.batch_size,
             num_workers=exp_config.num_workers,
             seed=seed,
-            normalize_on_gpu=normalize_on_gpu
+            normalize_on_gpu=normalize_on_gpu,
+            policy_lag=policy_lag
         )
         logger.info(f"Patch-level mode: {dataset_info['num_train_patches']} training patches "
                     f"from {dataset_info['num_train']} city-year samples")
@@ -779,7 +788,8 @@ def run_multimodal_experiment(exp_name: str, gpu_id: int = 0, seed: int = config
             batch_size=exp_config.train_config.batch_size,
             num_workers=exp_config.num_workers,
             seed=seed,
-            normalize_on_gpu=normalize_on_gpu
+            normalize_on_gpu=normalize_on_gpu,
+            policy_lag=policy_lag
         )
 
     # Init wandb
@@ -886,6 +896,7 @@ def run_multimodal_experiment(exp_name: str, gpu_id: int = 0, seed: int = config
         results = {
             'exp_name': exp_name,
             'seed': seed,
+            'policy_lag': policy_lag,
             'history': history,
             'training_mode': training_mode,
             'best_epoch': trainer.best_epoch,
@@ -951,6 +962,7 @@ def run_multimodal_experiment(exp_name: str, gpu_id: int = 0, seed: int = config
         results = {
             'exp_name': exp_name,
             'seed': seed,
+            'policy_lag': policy_lag,
             'history': history,
             'training_mode': training_mode,
             'best_epoch': trainer.best_epoch,
@@ -979,7 +991,9 @@ def run_multimodal_experiment(exp_name: str, gpu_id: int = 0, seed: int = config
             results['moe_expert_analysis'] = moe_analysis
             logger.info(f"MoE expert analysis: {len(moe_analysis)} city-level samples collected")
 
-    results_path = os.path.join(config.RESULT_DIR, f'{run_id}_results.pkl')
+    save_dir = result_dir if result_dir else str(config.RESULT_DIR)
+    os.makedirs(save_dir, exist_ok=True)
+    results_path = os.path.join(save_dir, f'{run_id}_results.pkl')
     with open(results_path, 'wb') as f:
         pickle.dump(results, f)
     logger.info(f"Results saved to {results_path}")
@@ -1044,9 +1058,16 @@ def main():
                         help=f"Random seed for reproducibility (default: {config.RANDOM_SEED})")
     parser.add_argument('--normalize_on_gpu', action='store_true',
                         help="Perform normalization on GPU instead of CPU (improves training speed)")
+    parser.add_argument('--policy_lag', type=int, default=1,
+                        help="Policy temporal lag in years (default: 1)")
+    parser.add_argument('--result_dir', type=str, default=None,
+                        help="Override result save directory (default: config.RESULT_DIR)")
     args = parser.parse_args()
 
-    run_multimodal_experiment(args.exp, args.gpu, args.seed, normalize_on_gpu=args.normalize_on_gpu)
+    run_multimodal_experiment(args.exp, args.gpu, args.seed,
+                              normalize_on_gpu=args.normalize_on_gpu,
+                              policy_lag=args.policy_lag,
+                              result_dir=args.result_dir)
 
 
 if __name__ == "__main__":

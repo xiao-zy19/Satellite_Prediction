@@ -52,7 +52,8 @@ class CityPolicyBertDataset(Dataset):
         augment: bool = False,
         use_preprocessed: bool = True,
         normalize_policy: bool = True,
-        normalize_on_gpu: bool = False
+        normalize_on_gpu: bool = False,
+        policy_lag: int = 1
     ):
         """
         Args:
@@ -65,6 +66,7 @@ class CityPolicyBertDataset(Dataset):
             use_preprocessed: Use preprocessed npy files if available
             normalize_policy: Whether to normalize policy features (only for structured)
             normalize_on_gpu: If True, skip CPU normalization (will be done on GPU during training)
+            policy_lag: Policy temporal lag in years (default: 1)
         """
         self.samples = samples
         self.policy_source = policy_source
@@ -80,9 +82,13 @@ class CityPolicyBertDataset(Dataset):
         if policy_source in ["bert", "hybrid"] and bert_cache is None:
             raise ValueError(f"bert_cache is required for policy_source='{policy_source}'")
 
-        # Initialize policy extractor for structured features
+        # Initialize policy extractor for structured features.
+        # NOTE: policy_lag only affects the structured extractor here.
+        # BERT embeddings have their lag baked in at cache build time
+        # (build_policy_bert_cache.py, default lag=1). To change BERT lag,
+        # the cache must be rebuilt with a different policy_lag value.
         if policy_source in ["structured", "hybrid"]:
-            self.policy_extractor = get_policy_extractor()
+            self.policy_extractor = get_policy_extractor(policy_lag=policy_lag)
         else:
             self.policy_extractor = None
 
@@ -234,7 +240,8 @@ class PatchLevelPolicyBertDataset(Dataset):
         augment: bool = False,
         use_preprocessed: bool = True,
         normalize_policy: bool = True,
-        normalize_on_gpu: bool = False
+        normalize_on_gpu: bool = False,
+        policy_lag: int = 1
     ):
         self.samples = samples
         self.policy_source = policy_source
@@ -257,9 +264,11 @@ class PatchLevelPolicyBertDataset(Dataset):
             for patch_idx in range(self.num_patches_total):
                 self.index_mapping.append((sample_idx, patch_idx))
 
-        # Initialize policy extractor for structured features
+        # Initialize policy extractor for structured features.
+        # NOTE: policy_lag only affects the structured extractor here.
+        # BERT embeddings have their lag baked in at cache build time.
         if policy_source in ["structured", "hybrid"]:
-            self.policy_extractor = get_policy_extractor()
+            self.policy_extractor = get_policy_extractor(policy_lag=policy_lag)
         else:
             self.policy_extractor = None
 
@@ -425,7 +434,8 @@ def get_bert_policy_dataloaders(
     num_workers: int = 4,
     augment_train: bool = True,
     seed: int = config.RANDOM_SEED,
-    normalize_on_gpu: bool = False
+    normalize_on_gpu: bool = False,
+    policy_lag: int = 1
 ) -> Tuple[DataLoader, DataLoader, DataLoader, Dict]:
     """
     Create train, validation, and test dataloaders with BERT/hybrid policy features (city-level).
@@ -438,6 +448,7 @@ def get_bert_policy_dataloaders(
         augment_train: Whether to augment training data
         seed: Random seed for reproducibility
         normalize_on_gpu: If True, skip CPU normalization
+        policy_lag: Policy temporal lag in years (default: 1)
 
     Returns:
         train_loader, val_loader, test_loader, dataset_info
@@ -466,15 +477,15 @@ def get_bert_policy_dataloaders(
 
     train_dataset = CityPolicyBertDataset(
         train_samples, policy_source=policy_source, bert_cache=bert_cache,
-        augment=augment_train, normalize_on_gpu=normalize_on_gpu
+        augment=augment_train, normalize_on_gpu=normalize_on_gpu, policy_lag=policy_lag
     )
     val_dataset = CityPolicyBertDataset(
         val_samples, policy_source=policy_source, bert_cache=bert_cache,
-        augment=False, normalize_on_gpu=normalize_on_gpu
+        augment=False, normalize_on_gpu=normalize_on_gpu, policy_lag=policy_lag
     )
     test_dataset = CityPolicyBertDataset(
         test_samples, policy_source=policy_source, bert_cache=bert_cache,
-        augment=False, normalize_on_gpu=normalize_on_gpu
+        augment=False, normalize_on_gpu=normalize_on_gpu, policy_lag=policy_lag
     )
 
     g = torch.Generator()
@@ -522,7 +533,8 @@ def get_bert_policy_dataloaders(
         'policy_source': policy_source,
         'policy_feature_dim': train_dataset.policy_dim,
         'seed': seed,
-        'normalize_on_gpu': normalize_on_gpu
+        'normalize_on_gpu': normalize_on_gpu,
+        'policy_lag': policy_lag
     }
 
     return train_loader, val_loader, test_loader, dataset_info
@@ -535,7 +547,8 @@ def get_patch_level_bert_policy_dataloaders(
     num_workers: int = 4,
     augment_train: bool = True,
     seed: int = config.RANDOM_SEED,
-    normalize_on_gpu: bool = False
+    normalize_on_gpu: bool = False,
+    policy_lag: int = 1
 ) -> Tuple[DataLoader, DataLoader, DataLoader, Dict]:
     """
     Create patch-level dataloaders with BERT/hybrid policy features.
@@ -548,6 +561,7 @@ def get_patch_level_bert_policy_dataloaders(
         augment_train: Whether to augment training data
         seed: Random seed for reproducibility
         normalize_on_gpu: If True, skip CPU normalization
+        policy_lag: Policy temporal lag in years (default: 1)
 
     Returns:
         train_loader, val_loader, test_loader, dataset_info
@@ -576,15 +590,15 @@ def get_patch_level_bert_policy_dataloaders(
 
     train_dataset = PatchLevelPolicyBertDataset(
         train_samples, policy_source=policy_source, bert_cache=bert_cache,
-        augment=augment_train, normalize_on_gpu=normalize_on_gpu
+        augment=augment_train, normalize_on_gpu=normalize_on_gpu, policy_lag=policy_lag
     )
     val_dataset = PatchLevelPolicyBertDataset(
         val_samples, policy_source=policy_source, bert_cache=bert_cache,
-        augment=False, normalize_on_gpu=normalize_on_gpu
+        augment=False, normalize_on_gpu=normalize_on_gpu, policy_lag=policy_lag
     )
     test_dataset = PatchLevelPolicyBertDataset(
         test_samples, policy_source=policy_source, bert_cache=bert_cache,
-        augment=False, normalize_on_gpu=normalize_on_gpu
+        augment=False, normalize_on_gpu=normalize_on_gpu, policy_lag=policy_lag
     )
 
     g = torch.Generator()
@@ -637,7 +651,8 @@ def get_patch_level_bert_policy_dataloaders(
         'policy_source': policy_source,
         'policy_feature_dim': train_dataset.policy_dim,
         'seed': seed,
-        'normalize_on_gpu': normalize_on_gpu
+        'normalize_on_gpu': normalize_on_gpu,
+        'policy_lag': policy_lag
     }
 
     return train_loader, val_loader, test_loader, dataset_info

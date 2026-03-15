@@ -21,9 +21,13 @@ wandb/
 
 # Results data (pickle files are large and can be regenerated)
 *.pkl
-results/*.pkl
+results/
 results-bd/
 old_results/
+analysis/results/
+
+# Generated visualizations
+*.png
 
 # IDE
 .vscode/

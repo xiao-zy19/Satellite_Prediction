@@ -4,6 +4,8 @@
 
 本项目比较了不同模型架构（MLP、LightCNN、ResNet、**Multimodal**、**Multimodal-BERT**）和不同预训练策略（无预训练、SimCLR、MAE、ImageNet）对人口增长率预测性能的影响。
 
+**v3.7 新增**: 政策时间滞后（Policy Lag）敏感性分析，支持 `--policy_lag` 和 `--result_dir` 参数；新增政策特征贡献度分析工具；补全 ResNet patch-level 基线实验。
+
 **v3.6 新增**: Residual Attention Aggregation（mean + 门控注意力校正），新增 9 个实验配置（5 单模态 + 4 多模态）。
 
 **v3.5 新增**: Mixture of Experts (MoE) 回归头，支持多专家软路由与负载均衡；修复数据划分确定性问题；新增综合结果分析工具。
@@ -22,10 +24,10 @@ Baseline_Pretrain/
 ├── config_multimodal.py           # 多模态实验配置
 ├── config_multimodal_bert.py      # BERT 多模态实验配置 [NEW v3.3]
 ├── dataset.py                     # 基础数据集类和数据加载器（支持GPU归一化）
-├── dataset_policy.py              # 带政策特征的数据集（支持GPU归一化）
-├── dataset_policy_bert.py         # BERT 政策嵌入数据集 [NEW v3.3]
+├── dataset_policy.py              # 带政策特征的数据集（支持GPU归一化、policy_lag）
+├── dataset_policy_bert.py         # BERT 政策嵌入数据集（支持policy_lag）[NEW v3.3]
 ├── train.py                       # 基础模型训练脚本（支持GPU归一化）
-├── train_multimodal.py            # 多模态模型训练脚本（支持GPU归一化）
+├── train_multimodal.py            # 多模态模型训练脚本（支持GPU归一化、policy_lag、result_dir）
 ├── train_multimodal_bert.py       # BERT 多模态模型训练脚本 [NEW v3.3]
 ├── evaluate.py                    # 模型评估脚本
 ├── compare_results.py             # 实验结果对比分析（支持子目录递归搜索）
@@ -82,15 +84,20 @@ Baseline_Pretrain/
 │   │   ├── run_policy_ablation_all_experiments.sh  # 完整政策消融（56配置 × 4政策 = 200配置 × 3种子 = 600实验）
 │   │   ├── run_policy_ablation_all_experiments_reverse.sh  # 完整政策消融（反向顺序）[NEW v3.5]
 │   │   ├── run_residual_attention_experiments.sh  # Residual Attention 消融实验 [NEW v3.6]
-│   │   └── run_missing_patch_experiments.sh  # 补缺 Patch 实验 [NEW v3.6]
+│   │   ├── run_missing_patch_experiments.sh  # 补缺 Patch 实验 [NEW v3.6]
+│   │   └── run_policy_lag_sensitivity.sh    # 政策时滞敏感性分析 (lag=0/1/2 × 3种子) [NEW v3.7]
 │   ├── run_missing_experiments.sh       # 补缺实验脚本（Gap Analysis 生成）
 │   ├── run_missing_experiments_reverse.sh  # 补缺实验（反向顺序）[NEW v3.5]
 │   └── utils/                     # 工具脚本
 │       └── start_experiments.sh         # tmux 启动实验
 ├── checkpoints/                   # 模型检查点 (gitignore)
 ├── logs/                          # 训练日志 (gitignore)
+├── analysis/                      # 政策特征分析工具与结果 [NEW v3.7]
+│   ├── policy_feature_analysis.py # 特征贡献度分析（置换重要性/分组敏感性/FiLM权重）
+│   └── results/                   # 分析结果 (pkl)
 ├── results/                       # 实验结果 (gitignore)
 │   ├── Baseline/                  # 基础模型结果
+│   ├── Multimodal/                # 多模态结果
 │   ├── MultimodalBert/            # BERT 多模态结果 [NEW v3.3]
 │   └── MultimodalHybrid/          # Hybrid 多模态结果 [NEW v3.3]
 └── wandb/                         # Wandb 日志 (gitignore)
@@ -240,6 +247,21 @@ python train_multimodal.py --exp mm_resnet101_concat --gpu 3
 python train_multimodal.py --exp mm_cnn_concat --gpu 3 --normalize_on_gpu
 
 # ============================================
+# 政策时滞敏感性分析 [NEW v3.7]
+# ============================================
+
+# 使用不同时滞 (lag=0: 当年政策, lag=1: 默认, lag=2: 前两年政策)
+python train_multimodal.py --exp mm_mae_cnn_film_patch --gpu 3 --policy_lag 0
+python train_multimodal.py --exp mm_mae_cnn_film_patch --gpu 3 --policy_lag 2
+
+# 自定义结果保存目录
+python train_multimodal.py --exp mm_mae_cnn_film_patch --gpu 3 --policy_lag 0 \
+    --result_dir /path/to/custom/results
+
+# 批量运行敏感性分析 (lag=0/1/2 × 3种子 = 9实验)
+bash scripts/ablation/run_policy_lag_sensitivity.sh --gpus 2 --resume
+
+# ============================================
 # Mixture of Experts (MoE) 实验 [NEW v3.5]
 # ============================================
 
@@ -348,7 +370,7 @@ python compare_results.py
 | `is_minority_favorable` | 二值 | {0, 1} | 是否为少数民族优惠地区 |
 | `policy_phase` | 离散 | [0, 3] | 政策阶段（0=单独二孩, 1=全面二孩, 2=三孩, 3=生育友好） |
 
-**时间滞后机制**: 为防止数据泄露，预测第 Y 年的人口增长率时，使用第 Y-1 年的政策特征（默认 lag=1）。
+**时间滞后机制**: 为防止数据泄露，预测第 Y 年的人口增长率时，使用第 Y-lag 年的政策特征（默认 lag=1）。可通过 `--policy_lag` 参数调整（lag=0 使用当年政策，lag=2 使用前两年政策）。
 
 ### BERT 政策嵌入 [NEW v3.3]
 
@@ -460,6 +482,16 @@ python run_extraction.py
 | `film` | Feature-wise Linear Modulation，政策调制图像特征 | ~8K |
 
 **训练脚本**: `train_multimodal.py`
+
+**命令行参数**:
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| `--exp` | 实验名称 | 必需 |
+| `--gpu` | GPU ID | 0 |
+| `--seed` | 随机种子 | 42 |
+| `--normalize_on_gpu` | GPU 归一化 | False |
+| `--policy_lag` | 政策时间滞后（年）| 1 |
+| `--result_dir` | 自定义结果目录 | `config.RESULT_DIR` |
 
 **适用实验**: `mm_cnn_*`, `mm_mlp_*`, `mm_resnet*_*`
 
@@ -928,6 +960,7 @@ BERT 多模态实验在 `config_multimodal_bert.py` 中定义，三种政策来�
 | `scripts/multimodal/run_moe_experiments.sh` | MoE 消融 | 6 配置 × 3 种子 = 18 实验 [NEW v3.5] |
 | `scripts/ablation/run_residual_attention_experiments.sh` | Residual Attention 消融 | 9 配置 × 3 种子 = 27 实验 [NEW v3.6] |
 | `scripts/ablation/run_missing_patch_experiments.sh` | 补缺 Patch 实验 | Patch-level 补缺实验 [NEW v3.6] |
+| `scripts/ablation/run_policy_lag_sensitivity.sh` | 政策时滞敏感性 | lag=0/1/2 × 3 种子 = 9 实验 [NEW v3.7] |
 
 ---
 
@@ -1182,6 +1215,15 @@ bash scripts/baseline/run_simple.sh --exp mlp_baseline --seeds 42,123,456
 | 42 (默认) | `mlp_baseline` | `mlp_baseline_results.pkl` | `checkpoints/mlp_baseline/` |
 | 123 | `mlp_baseline_seed123` | `mlp_baseline_seed123_results.pkl` | `checkpoints/mlp_baseline_seed123/` |
 | 456 | `mlp_baseline_seed456` | `mlp_baseline_seed456_results.pkl` | `checkpoints/mlp_baseline_seed456/` |
+
+**Policy Lag 命名规则**（多模态，`--policy_lag` 非默认值时追加 `_lag{N}` 后缀）：
+
+| Lag | Seed | run_id | 结果文件 |
+|-----|------|--------|----------|
+| 0 | 42 | `mm_mae_cnn_film_patch_lag0` | `mm_mae_cnn_film_patch_lag0_results.pkl` |
+| 0 | 123 | `mm_mae_cnn_film_patch_lag0_seed123` | `mm_mae_cnn_film_patch_lag0_seed123_results.pkl` |
+| 1 (默认) | 42 | `mm_mae_cnn_film_patch` | `mm_mae_cnn_film_patch_results.pkl` |
+| 2 | 456 | `mm_mae_cnn_film_patch_lag2_seed456` | `mm_mae_cnn_film_patch_lag2_seed456_results.pkl` |
 
 ---
 
@@ -1461,6 +1503,54 @@ requests>=2.28.0               # [NEW v3.3] 瓦片下载
 ---
 
 ## 更新日志
+
+### v3.7 (2026-03-15)
+
+**新增：政策时间滞后敏感性分析、政策特征贡献度分析、ResNet Patch-level 补缺**
+
+#### 政策时间滞后（Policy Lag）支持
+
+在多模态训练管线中全链路支持可配置的政策时间滞后参数：
+
+- **`dataset_policy.py`**: `CityPolicyDataset` / `PatchLevelPolicyDataset` 新增 `policy_lag` 参数
+  - `get_policy_dataloaders()` / `get_patch_level_policy_dataloaders()` 同步新增
+  - 传递给 `get_policy_extractor(policy_lag=...)` 控制政策年份偏移
+- **`dataset_policy_bert.py`**: `CityPolicyBertDataset` / `PatchLevelPolicyBertDataset` 新增 `policy_lag` 参数
+  - 注意：`policy_lag` 仅影响 structured extractor；BERT 嵌入的 lag 在缓存构建时固化
+  - `get_bert_policy_dataloaders()` / `get_patch_level_bert_policy_dataloaders()` 同步新增
+- **`train_multimodal.py`**: 训练入口新增 `--policy_lag` 和 `--result_dir` 命令行参数
+  - `run_id` 自动追加 `_lag{N}` 后缀（lag=1 时省略）
+  - 结果 pkl 中记录 `policy_lag` 字段
+  - `result_dir` 支持自定义结果保存目录
+
+#### 政策时滞敏感性实验脚本
+
+- **`scripts/ablation/run_policy_lag_sensitivity.sh`** (387 行): 在最优多模态配置（MAE+FiLM+Patch+Structured）上检验 lag=0/1/2 的稳健性
+  - 实验矩阵：3 lag × 3 seed = 9 实验（lag=1 已有则自动跳过）
+  - tmux 窗口管理、GPU 锁、resume 支持、dry-run 预览
+  - 结果直接写入 `bytedance-results/results/Multimodal/`
+
+#### 政策特征贡献度分析
+
+- **`analysis/policy_feature_analysis.py`** (1166 行): 三种推理时分析方法
+  - 逐特征置换重要性（Permutation Importance）
+  - 特征组敏感性（Group-level Counterfactual Sensitivity）
+  - FiLM gamma/beta 权重分析（静态 + 动态 + 线性分解）
+- **`analysis/results/`**: 分析结果（`permutation_importance_results.pkl`、`group_sensitivity_results.pkl`、`film_analysis_results.pkl`）
+
+#### ResNet Patch-level 基线补缺
+
+新增 13 个 ResNet patch-level 基线实验结果（3-seed）：
+- ResNet10 patch-level × 3 seeds
+- ResNet34 ImageNet patch-level × 3 seeds
+- ResNet50 patch-level (seed456) + ImageNet patch-level × 3 seeds
+- ResNet101 patch-level × 3 seeds + ImageNet patch-level × 3 seeds
+
+#### Patch 可解释性
+
+- **`patch_interpretability.ipynb`**: 切换至单模态基线 checkpoint（`simclr_cnn_patch_level`），重新生成 5 张可视化图
+
+---
 
 ### v3.6 (2026-03-11)
 
