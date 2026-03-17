@@ -1452,6 +1452,38 @@ BERT_MULTIMODAL_EXPERIMENTS = {
         use_pretrain=True,
         num_workers=2
     ),
+    "bert_mae_cnn_film_patch": MultiModalBertExperimentConfig(
+        exp_name="bert_mae_cnn_film_patch",
+        model_config=MultiModalBertConfig(
+            image_encoder_type="light_cnn",
+            fusion_type="film",
+            policy_source=_bert_config()
+        ),
+        train_config=MultiModalTrainConfig(
+            training_mode="patch_level",
+            batch_size=8,
+            patch_level_aggregation="trimmed_mean"
+        ),
+        pretrain_config=MAEConfig(encoder_type="light_cnn"),
+        use_pretrain=True,
+        num_workers=2
+    ),
+    "bert_mae_cnn_gated_patch": MultiModalBertExperimentConfig(
+        exp_name="bert_mae_cnn_gated_patch",
+        model_config=MultiModalBertConfig(
+            image_encoder_type="light_cnn",
+            fusion_type="gated",
+            policy_source=_bert_config()
+        ),
+        train_config=MultiModalTrainConfig(
+            training_mode="patch_level",
+            batch_size=8,
+            patch_level_aggregation="trimmed_mean"
+        ),
+        pretrain_config=MAEConfig(encoder_type="light_cnn"),
+        use_pretrain=True,
+        num_workers=2
+    ),
 
     # =========================================================================
     # PART 3: HYBRID POLICY (76-dim = BERT 64 + Structured 12) - Complete
@@ -2066,6 +2098,38 @@ BERT_MULTIMODAL_EXPERIMENTS = {
         model_config=MultiModalBertConfig(
             image_encoder_type="light_cnn",
             fusion_type="concat",
+            policy_source=_hybrid_config()
+        ),
+        train_config=MultiModalTrainConfig(
+            training_mode="patch_level",
+            batch_size=8,
+            patch_level_aggregation="trimmed_mean"
+        ),
+        pretrain_config=MAEConfig(encoder_type="light_cnn"),
+        use_pretrain=True,
+        num_workers=2
+    ),
+    "hybrid_mae_cnn_film_patch": MultiModalBertExperimentConfig(
+        exp_name="hybrid_mae_cnn_film_patch",
+        model_config=MultiModalBertConfig(
+            image_encoder_type="light_cnn",
+            fusion_type="film",
+            policy_source=_hybrid_config()
+        ),
+        train_config=MultiModalTrainConfig(
+            training_mode="patch_level",
+            batch_size=8,
+            patch_level_aggregation="trimmed_mean"
+        ),
+        pretrain_config=MAEConfig(encoder_type="light_cnn"),
+        use_pretrain=True,
+        num_workers=2
+    ),
+    "hybrid_mae_cnn_gated_patch": MultiModalBertExperimentConfig(
+        exp_name="hybrid_mae_cnn_gated_patch",
+        model_config=MultiModalBertConfig(
+            image_encoder_type="light_cnn",
+            fusion_type="gated",
             policy_source=_hybrid_config()
         ),
         train_config=MultiModalTrainConfig(
