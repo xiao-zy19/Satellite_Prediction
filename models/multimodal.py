@@ -356,6 +356,7 @@ class MultiModalModel(nn.Module):
         fusion_type: str = "concat",
         policy_feature_dim: int = 12,
         policy_hidden_dim: int = 64,
+        policy_output_dim: int = None,  # Output dim of policy encoder (default: same as policy_hidden_dim)
         image_feature_dim: int = 64,  # Project image features to this dim (default 64)
         aggregation_type: str = "mean",
         dropout: float = 0.3,
@@ -450,16 +451,17 @@ class MultiModalModel(nn.Module):
         self.encoder_out_dim = encoder_out_dim  # Store for aggregation
 
         # Policy encoder (optional, default is pass-through)
-        # use_policy_encoder=False: policy_dim = 12 (raw features)
-        # use_policy_encoder=True: policy_dim = policy_hidden_dim (encoded)
+        # use_policy_encoder=False: policy_dim = policy_feature_dim (raw features)
+        # use_policy_encoder=True: policy_dim = policy_output_dim (encoded)
+        _policy_output_dim = policy_output_dim if policy_output_dim is not None else policy_hidden_dim
         self.policy_encoder = PolicyEncoder(
             input_dim=policy_feature_dim,
             hidden_dim=policy_hidden_dim,
-            output_dim=policy_hidden_dim,
+            output_dim=_policy_output_dim,
             dropout=dropout,
             use_encoder=use_policy_encoder
         )
-        policy_dim = self.policy_encoder.output_dim  # 12 or policy_hidden_dim
+        policy_dim = self.policy_encoder.output_dim  # raw dim or _policy_output_dim
 
         # Fusion layer
         # Default: image_dim(64) + policy_dim(12) -> 64

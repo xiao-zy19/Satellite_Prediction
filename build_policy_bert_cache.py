@@ -497,7 +497,8 @@ def build_cache_from_texts(
     policy_texts: Dict[Tuple[str, int], Union[str, List[str]]],
     output_dir: str,
     config: PolicyBertConfig,
-    device: str = "cuda"
+    device: str = "cuda",
+    raw: bool = False
 ):
     """
     Build BERT embedding cache from policy texts.
@@ -507,18 +508,29 @@ def build_cache_from_texts(
         output_dir: Output directory for cache
         config: BERT encoder configuration
         device: Device to run BERT on
+        raw: If True, cache 768-dim pooled hidden states (before projection).
+             The trainable projection is handled by the downstream model.
     """
-    print(f"\nBuilding BERT cache...")
+    if raw:
+        print(f"\nBuilding RAW BERT cache (768-dim hidden states, no projection)...")
+    else:
+        print(f"\nBuilding BERT cache...")
     print(f"  Encoder: {config.model_name}")
-    print(f"  Output dim: {config.output_dim}")
-    print(f"  Chunk strategy: {config.chunk_strategy}")
+    print(f"  Output dim: {'768 (raw)' if raw else config.output_dim}")
+    print(f"  Chunk strategy: {'mean (forced for raw)' if raw else config.chunk_strategy}")
     print(f"  Total entries: {len(policy_texts)}")
 
     # Create encoder
     print(f"\nLoading BERT model...")
     encoder = PolicyBertEncoder(config)
 
-    # Wrap with multi-document aggregation
+    if raw:
+        # Raw mode: use encoder directly, cache will call forward_pooled()
+        embedding_dim = encoder.hidden_size  # 768
+    else:
+        embedding_dim = config.output_dim
+
+    # Wrap with multi-document aggregation (used in non-raw mode)
     multi_doc_encoder = MultiDocumentPolicyEncoder(
         encoder,
         aggregation="attention"
@@ -529,7 +541,7 @@ def build_cache_from_texts(
     # Create cache
     cache = PolicyEmbeddingCache(
         cache_dir=output_dir,
-        embedding_dim=config.output_dim,
+        embedding_dim=embedding_dim,
         policy_lag=1
     )
 
@@ -537,7 +549,8 @@ def build_cache_from_texts(
     cache.build(
         policy_texts=policy_texts,
         encoder=multi_doc_encoder,
-        device=device
+        device=device,
+        raw=raw
     )
 
     # Print statistics
@@ -600,6 +613,10 @@ Examples:
                         help='Do not include municipal/city policies')
     parser.add_argument('--no-propagate', action='store_true',
                         help='Do not propagate policies to subsequent years')
+    parser.add_argument('--raw', action='store_true',
+                        help='Cache 768-dim BERT hidden states (before projection). '
+                             'Use this for end-to-end training where the projection '
+                             'layer is part of the trainable model. Overrides --dim.')
 
     args = parser.parse_args()
 
@@ -708,9 +725,12 @@ Examples:
     # ==========================================================================
     # Create BERT config and build cache
     # ==========================================================================
+    raw_mode = args.raw
+    output_dim = args.dim
+
     config = PolicyBertConfig(
         model_name=args.model,
-        output_dim=args.dim,
+        output_dim=output_dim,
         chunk_strategy=args.chunk_strategy,
         freeze_bert=True
     )
@@ -721,22 +741,32 @@ Examples:
         print("\nWarning: CUDA not available, using CPU (this will be slow)")
         device = "cpu"
 
+    if raw_mode:
+        print("\n[RAW MODE] Caching 768-dim BERT hidden states (before projection)")
+        print("  The trainable projection will be part of the downstream model.")
+
     # Build cache
     cache = build_cache_from_texts(
         policy_texts=policy_texts,
         output_dir=args.output,
         config=config,
-        device=device
+        device=device,
+        raw=raw_mode
     )
 
     # ==========================================================================
     # Print summary and usage instructions
     # ==========================================================================
+    actual_dim = cache.embedding_dim
     print("\n" + "=" * 60)
     print("Cache build complete!")
     print("=" * 60)
     print(f"Cache saved to: {args.output}/")
-    print(f"  - policy_embeddings_dim{args.dim}.pkl")
+    print(f"  - policy_embeddings_dim{actual_dim}.pkl")
+
+    if raw_mode:
+        print("\nThis is a RAW cache (768-dim). The projection from 768-dim to the")
+        print("target dimension will be trained end-to-end as part of the model.")
 
     print("\nTo use this cache for training:")
     print(f"  python train_multimodal_bert.py --exp bert_cnn_concat --cache-dir {args.output}")
@@ -744,9 +774,9 @@ Examples:
     print("\nCache can be loaded in code with:")
     print(f"""
     from policy_bert import PolicyEmbeddingCache
-    cache = PolicyEmbeddingCache(cache_dir='{args.output}', embedding_dim={args.dim})
+    cache = PolicyEmbeddingCache(cache_dir='{args.output}', embedding_dim={actual_dim})
     cache.load()
-    embedding = cache.get_for_city('北京市', 2022)  # Returns numpy array of shape ({args.dim},)
+    embedding = cache.get_for_city('北京市', 2022)  # Returns numpy array of shape ({actual_dim},)
     """)
 
 

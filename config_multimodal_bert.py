@@ -82,6 +82,7 @@ class MultiModalBertConfig:
 
     # Policy encoder
     policy_hidden_dim: int = 64
+    policy_output_dim: int = 64  # Output dim of policy encoder (when use_policy_encoder=True)
     use_policy_encoder: bool = False
 
     # Fusion strategy
@@ -120,10 +121,10 @@ def _structured_config(source="structured"):
     return PolicySourceConfig(source=source)
 
 def _bert_config():
-    return PolicySourceConfig(source="bert", bert_dim=64)
+    return PolicySourceConfig(source="bert", bert_dim=768)
 
 def _hybrid_config():
-    return PolicySourceConfig(source="hybrid", bert_dim=64)
+    return PolicySourceConfig(source="hybrid", bert_dim=768)
 
 
 # =============================================================================
@@ -2124,6 +2125,8 @@ def print_bert_multimodal_config(exp_config: MultiModalBertExperimentConfig):
 
     print(f"  Image Feature Dim: {mc.image_feature_dim}")
     print(f"  Policy Source: {ps.source} ({ps.policy_dim}-dim)")
+    if ps.policy_dim >= 768:
+        print(f"  Policy Projection: {ps.policy_dim}→{mc.policy_hidden_dim}→{mc.policy_output_dim} (trainable E2E)")
     print(f"  Fusion Type: {mc.fusion_type}")
     print(f"  Training Mode: {tc.training_mode}")
 

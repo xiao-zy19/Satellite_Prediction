@@ -4,6 +4,8 @@
 
 本项目比较了不同模型架构（MLP、LightCNN、ResNet、**Multimodal**、**Multimodal-BERT**）和不同预训练策略（无预训练、SimCLR、MAE、ImageNet）对人口增长率预测性能的影响。
 
+**v3.8 新增**: BERT 端到端训练模式——缓存 768 维原始隐状态，投影层（768→256→64）在下游模型中端到端训练；自动启用 trainable policy encoder。
+
 **v3.7 新增**: 政策时间滞后（Policy Lag）敏感性分析，支持 `--policy_lag` 和 `--result_dir` 参数；新增政策特征贡献度分析工具；补全 ResNet patch-level 基线实验。
 
 **v3.6 新增**: Residual Attention Aggregation（mean + 门控注意力校正），新增 9 个实验配置（5 单模态 + 4 多模态）。
@@ -95,6 +97,9 @@ Baseline_Pretrain/
 ├── analysis/                      # 政策特征分析工具与结果 [NEW v3.7]
 │   ├── policy_feature_analysis.py # 特征贡献度分析（置换重要性/分组敏感性/FiLM权重）
 │   └── results/                   # 分析结果 (pkl)
+├── policy_bert_cache/             # BERT 嵌入预计算缓存 [v3.8 新增 768-dim]
+│   ├── policy_embeddings_dim64.pkl   # 64维投影后缓存 (v3.3)
+│   └── policy_embeddings_dim768.pkl  # 768维原始隐状态缓存 (v3.8)
 ├── results/                       # 实验结果 (gitignore)
 │   ├── Baseline/                  # 基础模型结果
 │   ├── Multimodal/                # 多模态结果
@@ -374,15 +379,22 @@ python compare_results.py
 
 ### BERT 政策嵌入 [NEW v3.3]
 
-使用中文预训练 BERT（`hfl/chinese-roberta-wwm-ext`）对生育政策原文进行语义编码，生成 64 维密集嵌入向量。
+使用中文预训练 BERT（`hfl/chinese-roberta-wwm-ext`）对生育政策原文进行语义编码。
+
+**两种缓存模式**:
+
+| 模式 | 缓存维度 | 投影 | 说明 |
+|------|---------|------|------|
+| 投影模式（v3.3） | 64 | 缓存时完成（冻结随机投影） | `policy_embeddings_dim64.pkl` |
+| **Raw 模式（v3.8）** | **768** | **训练时端到端学习** | `policy_embeddings_dim768.pkl` |
 
 **三种政策来源**:
 
-| 来源 | 维度 | 说明 |
-|------|------|------|
+| 来源 | 维度（Raw 模式） | 说明 |
+|------|-----------------|------|
 | `structured` | 12 | 结构化特征（与 v3.0 相同） |
-| `bert` | 64 | BERT 编码政策原文 |
-| `hybrid` | 76 | BERT (64维) + 结构化 (12维) 拼接 |
+| `bert` | 768 | BERT 原始隐状态 |
+| `hybrid` | 780 | BERT 768维 + 结构化 12维 |
 
 **BERT 编码流程**:
 
@@ -390,17 +402,19 @@ python compare_results.py
 2. **分块编码**: 支持 mean/max/hierarchical/attention 四种分块策略处理长文本
 3. **多文档聚合**: `MultiDocumentPolicyEncoder` 聚合同一省份-年份的多份政策文档
 4. **缓存机制**: `PolicyEmbeddingCache` 预计算所有嵌入并缓存为 pickle 文件，训练时直接加载
+5. **[v3.8] 端到端投影**: Raw 模式下缓存 768 维隐状态，768→256→64 投影层在训练中端到端学习
 
 **缓存构建**:
 
 ```bash
-# 从收集的政策全文构建缓存
+# Raw 模式（推荐，v3.8）：缓存 768 维原始隐状态，投影层端到端训练
 python build_policy_bert_cache.py --from-collected \
-    --input data_local/Fertility_Policy/policy_full_texts_collected.json
+    --input data_local/Fertility_Policy/policy_full_texts_collected.json \
+    --raw
 
-# 自定义参数
+# 投影模式（v3.3 原始方式）：缓存时完成 768→64 投影（冻结）
 python build_policy_bert_cache.py --from-collected \
-    --model hfl/chinese-roberta-wwm-ext \
+    --input data_local/Fertility_Policy/policy_full_texts_collected.json \
     --dim 64 \
     --chunk-strategy mean
 ```
@@ -501,16 +515,17 @@ BERT 多模态模型使用 BERT 编码的政策文本嵌入替代（或增强）
 
 ```
 训练: 输入 image(batch, 25, 64, 200, 200) + policy(batch, D)
-      → 图像编码器 → 聚合 → 融合层 → 回归头 → 输出 (batch, 1)
-      其中 D = 64 (bert) / 76 (hybrid) / 12 (structured)
+      → 图像编码器 → 聚合 → [政策投影(D→256→64)] → 融合层 → 回归头 → 输出 (batch, 1)
+      其中 D = 768 (bert) / 780 (hybrid) / 12 (structured)
+      当 D ≥ 768 时自动启用 trainable policy encoder (v3.8)
 ```
 
-**三种政策来源配置**:
-| 来源 | policy_dim | 说明 |
-|------|-----------|------|
-| `bert` | 64 | BERT 嵌入（需预构建缓存） |
-| `hybrid` | 76 | BERT 64维 + 结构化 12维 |
-| `structured` | 12 | 与原始多模态相同 |
+**三种政策来源配置（v3.8 Raw 模式）**:
+| 来源 | policy_dim | 投影 | 说明 |
+|------|-----------|------|------|
+| `bert` | 768 | 768→256→64（端到端训练） | BERT 原始隐状态 |
+| `hybrid` | 780 | 780→256→64（端到端训练） | BERT 768维 + 结构化 12维 |
+| `structured` | 12 | 无（直接使用） | 与原始多模态相同 |
 
 **训练脚本**: `train_multimodal_bert.py`
 
@@ -1101,10 +1116,12 @@ output = Σ w_k × expert_k(x)
     ↓ Chunk Strategy (mean/max/hierarchical/attention)
 文档嵌入 (768,)
     ↓ MultiDocumentPolicyEncoder（多文档聚合）
-    ↓ 线性投影 768 → 64
-政策嵌入 (64,)
+    ├── [v3.3 投影模式] 线性投影 768 → 64 → 缓存 (64,)
+    └── [v3.8 Raw 模式] forward_pooled() → 缓存 (768,)
+政策嵌入
     ↓ PolicyEmbeddingCache（预计算缓存）
     ↓ 训练时直接加载
+    ↓ [v3.8] PolicyEncoder 768→256→64（端到端训练）
 ```
 
 **关键组件**:
@@ -1113,12 +1130,13 @@ output = Σ w_k × expert_k(x)
 |------|------|
 | `KeyArticleExtractor` | 30+ 关键词筛选生育相关条款 |
 | `PolicyBertEncoder` | BERT 编码 + 分块聚合 |
+| `PolicyBertEncoder.forward_pooled()` | [v3.8] 返回投影前 768 维隐状态（mean chunk agg） |
 | `MultiDocumentPolicyEncoder` | 多文档 → 单一嵌入 |
-| `PolicyEmbeddingCache` | 预计算缓存，支持维度验证 |
+| `PolicyEmbeddingCache` | 预计算缓存，支持 raw 模式和维度验证 |
 
-### BERT Multimodal Model (`models/multimodal_bert.py`) [NEW v3.3]
+### BERT Multimodal Model (`models/multimodal_bert.py`) [v3.8 更新]
 
-基于 `models/multimodal.py` 的多模态模型，通过 `create_bert_multimodal_model()` 工厂函数创建，自动适配不同政策维度（12/64/76）。
+基于 `models/multimodal.py` 的多模态模型，通过 `create_bert_multimodal_model()` 工厂函数创建。当检测到 `policy_dim ≥ 768` 时，自动启用 trainable policy encoder（768→256→64），无需手动配置。
 
 ---
 
@@ -1503,6 +1521,43 @@ requests>=2.28.0               # [NEW v3.3] 瓦片下载
 ---
 
 ## 更新日志
+
+### v3.8 (2026-03-17)
+
+**新增：BERT 端到端训练模式（Raw 768-dim 缓存 + Trainable Policy Projection）**
+
+此前 BERT 政策嵌入在缓存阶段即完成 768→64 投影（冻结的随机初始化投影层），导致信息损失。v3.8 改为缓存 768 维原始隐状态，将投影层移入下游模型端到端训练。
+
+#### Raw 缓存模式 (`policy_bert.py`, `build_policy_bert_cache.py`)
+
+- **`PolicyBertEncoder.forward_pooled()`**: 新增方法，返回投影前的 768 维 pooled hidden states
+  - 使用 mean chunk aggregation（无可学习参数），确保缓存的确定性
+  - 多文档场景：对每个文档分别取 768 维表示后 mean pooling
+- **`PolicyEmbeddingCache.build(raw=True)`**: 新增 raw 模式，缓存 768 维原始表示
+  - 自动覆盖 `embedding_dim` 和缓存文件名 (`policy_embeddings_dim768.pkl`)
+- **`build_policy_bert_cache.py --raw`**: 新增 CLI 参数启用 raw 缓存模式
+- **`.gitignore`**: 放行 `policy_bert_cache/policy_embeddings_*.pkl` 纳入版本控制
+
+#### 自动 Trainable Policy Encoder (`models/multimodal_bert.py`, `models/multimodal.py`)
+
+- **`create_bert_multimodal_model()`**: 当 `policy_dim ≥ 768` 时自动启用：
+  - `use_policy_encoder=True`
+  - `policy_hidden_dim=256`（768→256 隐藏层）
+  - `policy_output_dim=64`（256→64 输出层）
+  - 打印 `[BERT E2E]` 日志确认投影配置
+- **`MultiModalModel`**: 新增 `policy_output_dim` 参数，支持 hidden_dim 与 output_dim 分离
+
+#### 配置更新 (`config_multimodal_bert.py`)
+
+- `MultiModalBertConfig` 新增 `policy_output_dim: int = 64` 字段
+- BERT/Hybrid 默认 `bert_dim` 从 64 改为 768（匹配 raw 缓存）
+- `print_bert_multimodal_config()` 增加投影维度信息打印
+
+#### 新增缓存文件
+
+- `policy_bert_cache/policy_embeddings_dim768.pkl` (1.3MB): 768 维原始 BERT 隐状态缓存
+
+---
 
 ### v3.7 (2026-03-15)
 

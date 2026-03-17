@@ -423,6 +423,48 @@ class PolicyBertEncoder(nn.Module):
         embedding = self.projection(pooled)
         return embedding
 
+    def forward_pooled(self, text: str) -> torch.Tensor:
+        """
+        Encode policy text to pooled hidden representation (BEFORE projection).
+
+        Uses mean chunk aggregation (parameter-free) to produce a deterministic
+        768-dim vector suitable for caching. The downstream model handles
+        the trainable projection from 768-dim to the target dimension.
+
+        Args:
+            text: Policy document text (can be long)
+
+        Returns:
+            (1, hidden_size) pooled hidden representation (e.g. 768-dim)
+        """
+        device = next(self.parameters()).device
+
+        if not text or len(text.strip()) == 0:
+            return torch.zeros(1, self.hidden_size, device=device)
+
+        # Extract relevant articles if enabled
+        if self.article_extractor is not None:
+            text = self.article_extractor.extract_relevant_articles(text)
+            if not text:
+                return torch.zeros(1, self.hidden_size, device=device)
+
+        # Split into chunks
+        chunks = self._split_into_chunks(text)
+
+        # Encode each chunk
+        chunk_embeddings = []
+        for chunk in chunks:
+            emb = self._encode_single_chunk(chunk, device)
+            chunk_embeddings.append(emb)
+
+        # Stack: (num_chunks, hidden_size)
+        chunk_embeddings = torch.cat(chunk_embeddings, dim=0)
+
+        # Mean pooling over chunks (parameter-free, safe for caching)
+        pooled = chunk_embeddings.mean(dim=0, keepdim=True)  # (1, hidden_size)
+
+        return pooled
+
     def encode_batch(self, texts: List[str]) -> torch.Tensor:
         """
         Encode a batch of texts.
@@ -553,7 +595,8 @@ class PolicyEmbeddingCache:
         policy_texts: Dict[Tuple[str, int], Union[str, List[str]]],
         encoder: Union[PolicyBertEncoder, MultiDocumentPolicyEncoder],
         device: str = "cuda",
-        batch_size: int = 1
+        batch_size: int = 1,
+        raw: bool = False
     ):
         """
         Build the embedding cache.
@@ -563,11 +606,29 @@ class PolicyEmbeddingCache:
             encoder: BERT encoder instance
             device: Device to run inference on
             batch_size: Batch size for encoding (not used currently)
+            raw: If True, cache 768-dim pooled hidden states (before projection)
+                 using mean chunk aggregation. The trainable projection is then
+                 handled by the downstream model during training.
         """
-        encoder = encoder.to(device)
-        encoder.eval()
+        # For raw mode, we need the underlying PolicyBertEncoder
+        if raw:
+            if isinstance(encoder, MultiDocumentPolicyEncoder):
+                bert_encoder = encoder.bert_encoder
+            elif isinstance(encoder, PolicyBertEncoder):
+                bert_encoder = encoder
+            else:
+                raise TypeError(f"raw mode requires PolicyBertEncoder, got {type(encoder)}")
+            bert_encoder = bert_encoder.to(device)
+            bert_encoder.eval()
+            # Override embedding_dim for raw mode
+            self.embedding_dim = bert_encoder.hidden_size
+            self.cache_file = self.cache_dir / f"policy_embeddings_dim{self.embedding_dim}.pkl"
+            self.default_embedding = np.zeros(self.embedding_dim, dtype=np.float32)
+        else:
+            encoder = encoder.to(device)
+            encoder.eval()
 
-        print(f"Building policy embedding cache...")
+        print(f"Building policy embedding cache{'  [RAW 768-dim mode]' if raw else ''}...")
         print(f"  Total entries: {len(policy_texts)}")
         print(f"  Output dimension: {self.embedding_dim}")
         print(f"  Cache file: {self.cache_file}")
@@ -577,16 +638,31 @@ class PolicyEmbeddingCache:
                 policy_texts.items(),
                 desc="Encoding policies"
             ):
-                # Handle single text or list of texts
-                if isinstance(text_data, list):
-                    if isinstance(encoder, MultiDocumentPolicyEncoder):
-                        embedding = encoder(text_data)
+                if raw:
+                    # Raw mode: get 768-dim pooled hidden states
+                    if isinstance(text_data, list):
+                        # Multi-document: mean-pool per-document 768-dim embeddings
+                        doc_embeddings = []
+                        for doc_text in text_data:
+                            if doc_text and len(doc_text.strip()) > 0:
+                                emb = bert_encoder.forward_pooled(doc_text)
+                                doc_embeddings.append(emb)
+                        if doc_embeddings:
+                            embedding = torch.stack(doc_embeddings).mean(dim=0)
+                        else:
+                            embedding = torch.zeros(1, self.embedding_dim, device=device)
                     else:
-                        # Concatenate texts for single-doc encoder
-                        combined_text = "\n\n".join(text_data)
-                        embedding = encoder(combined_text)
+                        embedding = bert_encoder.forward_pooled(text_data)
                 else:
-                    embedding = encoder(text_data)
+                    # Original mode: get projected embeddings
+                    if isinstance(text_data, list):
+                        if isinstance(encoder, MultiDocumentPolicyEncoder):
+                            embedding = encoder(text_data)
+                        else:
+                            combined_text = "\n\n".join(text_data)
+                            embedding = encoder(combined_text)
+                    else:
+                        embedding = encoder(text_data)
 
                 # Store as numpy
                 self.embeddings[(province, year)] = embedding.squeeze().cpu().numpy()

@@ -32,7 +32,9 @@ def create_bert_multimodal_model(model_config, patch_level: bool = False):
     Create multimodal model for BERT/Hybrid policy features.
 
     This is a convenience wrapper that extracts the correct policy_feature_dim
-    from the BERT model config.
+    from the BERT model config. When BERT/Hybrid features are used (768-dim),
+    it automatically enables a trainable policy encoder (projection layer)
+    so that the 768→64 projection is trained end-to-end.
 
     Args:
         model_config: MultiModalBertConfig instance
@@ -44,16 +46,33 @@ def create_bert_multimodal_model(model_config, patch_level: bool = False):
     # Get policy dimension from config
     policy_dim = model_config.policy_feature_dim  # This uses the @property
 
+    # Determine policy encoder settings
+    use_policy_encoder = getattr(model_config, 'use_policy_encoder', False)
+    policy_hidden_dim = model_config.policy_hidden_dim
+    policy_output_dim = getattr(model_config, 'policy_output_dim', None)
+
+    # Auto-enable trainable projection for BERT/hybrid (768-dim or 780-dim input)
+    # The projection layer (768→hidden→64) is trained end-to-end with the model.
+    if policy_dim >= 768 and not use_policy_encoder:
+        use_policy_encoder = True
+        if policy_hidden_dim < 128:  # Default value too small for 768-dim input
+            policy_hidden_dim = 256
+        if policy_output_dim is None or policy_output_dim >= 768:
+            policy_output_dim = 64
+        print(f"[BERT E2E] Auto-enabled trainable policy projection: "
+              f"{policy_dim}→{policy_hidden_dim}→{policy_output_dim}")
+
     return MultiModalModel(
         image_encoder_type=model_config.image_encoder_type,
         fusion_type=model_config.fusion_type,
         policy_feature_dim=policy_dim,
-        policy_hidden_dim=model_config.policy_hidden_dim,
+        policy_hidden_dim=policy_hidden_dim,
+        policy_output_dim=policy_output_dim,
         image_feature_dim=getattr(model_config, 'image_feature_dim', 64),
         aggregation_type=model_config.aggregation,
         dropout=model_config.dropout_rate,
         patch_level=patch_level,
-        use_policy_encoder=getattr(model_config, 'use_policy_encoder', False),
+        use_policy_encoder=use_policy_encoder,
         model_config=model_config
     )
 

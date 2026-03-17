@@ -21,6 +21,7 @@ wandb/
 
 # Results data (pickle files are large and can be regenerated)
 *.pkl
+!policy_bert_cache/policy_embeddings_*.pkl
 results/
 results-bd/
 old_results/
