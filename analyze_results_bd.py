@@ -125,6 +125,78 @@ def extract_total_epochs(data):
     return None
 
 
+def normalize_year_list(years):
+    """Normalize year-like values to a sorted list of ints."""
+    if years is None:
+        return None
+    if isinstance(years, (list, tuple, set, np.ndarray, pd.Series)):
+        values = [int(y) for y in years]
+    else:
+        values = [int(years)]
+    return sorted(values)
+
+
+def format_years_compact(years):
+    """Format sorted years into compact ranges like 2018-2021,2023."""
+    if not years:
+        return 'NA'
+
+    ranges = []
+    start = years[0]
+    prev = years[0]
+
+    for year in years[1:]:
+        if year == prev + 1:
+            prev = year
+            continue
+        if start == prev:
+            ranges.append(str(start))
+        else:
+            ranges.append(f'{start}-{prev}')
+        start = year
+        prev = year
+
+    if start == prev:
+        ranges.append(str(start))
+    else:
+        ranges.append(f'{start}-{prev}')
+
+    return ','.join(ranges)
+
+
+def extract_split_info(data):
+    """Extract split metadata in a backward-compatible way."""
+    temporal_split = bool(data.get('temporal_split', False))
+    train_years = normalize_year_list(data.get('train_years'))
+    val_years = normalize_year_list(data.get('val_years'))
+    test_years = normalize_year_list(data.get('test_years'))
+
+    if temporal_split:
+        train_str = format_years_compact(train_years)
+        val_str = format_years_compact(val_years)
+        test_str = format_years_compact(test_years)
+        if train_years is None and val_years is None and test_years is None:
+            split_tag = 'temporal_unspecified'
+        else:
+            split_tag = f'T:{train_str}|V:{val_str}|E:{test_str}'
+    else:
+        train_str = ''
+        val_str = ''
+        test_str = ''
+        split_tag = 'random'
+
+    return {
+        'temporal_split': temporal_split,
+        'train_years': train_years,
+        'val_years': val_years,
+        'test_years': test_years,
+        'train_years_str': train_str,
+        'val_years_str': val_str,
+        'test_years_str': test_str,
+        'split_tag': split_tag,
+    }
+
+
 def parse_baseline_file(data, filename, subdir):
     """Parse a Baseline pkl file and return list of result dicts."""
     results = []
@@ -144,6 +216,7 @@ def parse_baseline_file(data, filename, subdir):
     total_epochs = extract_total_epochs(data)
     model_params = data.get('model_params')
     val_best_r2 = extract_val_best_r2_from_history(data)
+    split_info = extract_split_info(data)
 
     # Extract validation metrics (flat)
     val_metrics_raw = {}
@@ -177,6 +250,7 @@ def parse_baseline_file(data, filename, subdir):
                     'best_epoch': best_epoch,
                     'total_epochs': total_epochs,
                     'model_params': model_params,
+                    **split_info,
                 }
                 for mk in METRIC_KEYS:
                     row[f'test_{mk}'] = test_m.get(mk)
@@ -210,6 +284,7 @@ def parse_baseline_file(data, filename, subdir):
             'best_epoch': best_epoch,
             'total_epochs': total_epochs,
             'model_params': model_params,
+            **split_info,
         }
         for mk in METRIC_KEYS:
             row[f'test_{mk}'] = test_m.get(mk)
@@ -254,6 +329,7 @@ def parse_multimodal_file(data, filename, subdir):
     policy_source = data.get('policy_source', 'N/A')
     policy_dim = data.get('policy_dim', 'N/A')
     val_best_r2 = extract_val_best_r2_from_history(data)
+    split_info = extract_split_info(data)
 
     # Determine policy_source from subdir if not set
     if policy_source is None or policy_source == 'N/A' or policy_source == '?':
@@ -296,6 +372,7 @@ def parse_multimodal_file(data, filename, subdir):
                     'best_epoch': best_epoch,
                     'total_epochs': total_epochs,
                     'model_params': model_params,
+                    **split_info,
                 }
                 for mk in METRIC_KEYS:
                     row[f'test_{mk}'] = test_m.get(mk)
@@ -324,6 +401,7 @@ def parse_multimodal_file(data, filename, subdir):
             'best_epoch': best_epoch,
             'total_epochs': total_epochs,
             'model_params': model_params,
+            **split_info,
         }
         for mk in METRIC_KEYS:
             row[f'test_{mk}'] = test_m.get(mk)
@@ -420,6 +498,11 @@ def compute_grouped_summary(df, group_cols, sort_by='test_r2_mean'):
         grouped = grouped.sort_values(sort_by, ascending=False)
 
     return grouped.reset_index()
+
+
+def add_split_group(base_cols):
+    """Prepend split metadata to grouping columns."""
+    return ['split_tag'] + list(base_cols)
 
 
 def format_metric(mean_val, std_val, fmt='.3f'):
@@ -547,6 +630,8 @@ def main():
 
     # Fill None policy_source for Multimodal files that didn't have it
     df['policy_source'] = df['policy_source'].fillna('structured')
+    df['temporal_split'] = df['temporal_split'].fillna(False).astype(bool)
+    df['split_tag'] = df['split_tag'].fillna('random')
 
     print(f"DataFrame shape: {df.shape}")
     print(f"Columns: {list(df.columns)}")
@@ -556,7 +641,7 @@ def main():
     # Step 3: Save detailed per-experiment CSV
     # ========================================================================
     detailed_csv_path = os.path.join(results_dir, 'analysis_detailed.csv')
-    df_sorted = df.sort_values(['subdir', 'encoder', 'pretrain', 'training_mode',
+    df_sorted = df.sort_values(['subdir', 'split_tag', 'encoder', 'pretrain', 'training_mode',
                                  'fusion_type', 'aggregation', 'seed'])
     df_sorted.to_csv(detailed_csv_path, index=False, float_format='%.6f')
     print(f"Detailed per-experiment CSV saved: {detailed_csv_path}")
@@ -586,7 +671,7 @@ def main():
     # ---- 4a: Baseline experiments ----
     df_baseline = df[df['subdir'] == 'Baseline'].copy()
     if not df_baseline.empty:
-        group_cols_bl = ['encoder', 'pretrain', 'training_mode', 'aggregation']
+        group_cols_bl = add_split_group(['encoder', 'pretrain', 'training_mode', 'aggregation'])
         summary_bl = compute_grouped_summary(df_baseline, group_cols_bl)
         summary_bl.insert(0, 'category', 'Baseline')
         all_summary_dfs.append(summary_bl)
@@ -603,12 +688,13 @@ def main():
         print(f"Top {top_n} by Test R2:")
         for i, row in summary_bl.head(top_n).iterrows():
             r2 = format_metric(row.get('test_r2_mean'), row.get('test_r2_std'))
+            split = row.get('split_tag', '?')
             enc = row.get('encoder', '?')
             pre = row.get('pretrain', '?')
             mode = row.get('training_mode', '?')
             agg = row.get('aggregation', '?')
             n = row.get('n_runs', '?')
-            print(f"  {enc:>12} | {pre:>8} | {mode:>12} | {agg:>13} | n={n} | R2={r2}")
+            print(f"  {split:>24} | {enc:>12} | {pre:>8} | {mode:>12} | {agg:>13} | n={n} | R2={r2}")
 
         generate_report_section(
             'BASELINE EXPERIMENTS (sorted by Test R2)',
@@ -618,7 +704,7 @@ def main():
     # ---- 4b: Multimodal experiments (structured policy) ----
     df_mm = df[df['subdir'] == 'Multimodal'].copy()
     if not df_mm.empty:
-        group_cols_mm = ['encoder', 'pretrain', 'training_mode', 'aggregation', 'fusion_type']
+        group_cols_mm = add_split_group(['encoder', 'pretrain', 'training_mode', 'aggregation', 'fusion_type'])
         summary_mm = compute_grouped_summary(df_mm, group_cols_mm)
         summary_mm.insert(0, 'category', 'Multimodal')
         all_summary_dfs.append(summary_mm)
@@ -634,13 +720,14 @@ def main():
         print(f"Top {top_n} by Test R2:")
         for i, row in summary_mm.head(top_n).iterrows():
             r2 = format_metric(row.get('test_r2_mean'), row.get('test_r2_std'))
+            split = row.get('split_tag', '?')
             enc = row.get('encoder', '?')
             pre = row.get('pretrain', '?')
             mode = row.get('training_mode', '?')
             agg = row.get('aggregation', '?')
             fus = row.get('fusion_type', '?')
             n = row.get('n_runs', '?')
-            print(f"  {enc:>12} | {pre:>8} | {mode:>12} | {agg:>15} | {fus:>10} | n={n} | R2={r2}")
+            print(f"  {split:>24} | {enc:>12} | {pre:>8} | {mode:>12} | {agg:>15} | {fus:>10} | n={n} | R2={r2}")
 
         generate_report_section(
             'MULTIMODAL EXPERIMENTS - Structured Policy (sorted by Test R2)',
@@ -650,7 +737,7 @@ def main():
     # ---- 4c: MultimodalBert experiments ----
     df_bert = df[df['subdir'] == 'MultimodalBert'].copy()
     if not df_bert.empty:
-        group_cols_bert = ['encoder', 'pretrain', 'training_mode', 'aggregation', 'fusion_type']
+        group_cols_bert = add_split_group(['encoder', 'pretrain', 'training_mode', 'aggregation', 'fusion_type'])
         summary_bert = compute_grouped_summary(df_bert, group_cols_bert)
         summary_bert.insert(0, 'category', 'MultimodalBert')
         all_summary_dfs.append(summary_bert)
@@ -666,13 +753,14 @@ def main():
         print(f"Top {top_n} by Test R2:")
         for i, row in summary_bert.head(top_n).iterrows():
             r2 = format_metric(row.get('test_r2_mean'), row.get('test_r2_std'))
+            split = row.get('split_tag', '?')
             enc = row.get('encoder', '?')
             pre = row.get('pretrain', '?')
             mode = row.get('training_mode', '?')
             agg = row.get('aggregation', '?')
             fus = row.get('fusion_type', '?')
             n = row.get('n_runs', '?')
-            print(f"  {enc:>12} | {pre:>8} | {mode:>12} | {agg:>13} | {fus:>10} | n={n} | R2={r2}")
+            print(f"  {split:>24} | {enc:>12} | {pre:>8} | {mode:>12} | {agg:>13} | {fus:>10} | n={n} | R2={r2}")
 
         generate_report_section(
             'MULTIMODAL BERT EXPERIMENTS (sorted by Test R2)',
@@ -682,7 +770,7 @@ def main():
     # ---- 4d: MultimodalHybrid experiments ----
     df_hybrid = df[df['subdir'] == 'MultimodalHybrid'].copy()
     if not df_hybrid.empty:
-        group_cols_hyb = ['encoder', 'pretrain', 'training_mode', 'aggregation', 'fusion_type']
+        group_cols_hyb = add_split_group(['encoder', 'pretrain', 'training_mode', 'aggregation', 'fusion_type'])
         summary_hyb = compute_grouped_summary(df_hybrid, group_cols_hyb)
         summary_hyb.insert(0, 'category', 'MultimodalHybrid')
         all_summary_dfs.append(summary_hyb)
@@ -698,13 +786,14 @@ def main():
         print(f"Top {top_n} by Test R2:")
         for i, row in summary_hyb.head(top_n).iterrows():
             r2 = format_metric(row.get('test_r2_mean'), row.get('test_r2_std'))
+            split = row.get('split_tag', '?')
             enc = row.get('encoder', '?')
             pre = row.get('pretrain', '?')
             mode = row.get('training_mode', '?')
             agg = row.get('aggregation', '?')
             fus = row.get('fusion_type', '?')
             n = row.get('n_runs', '?')
-            print(f"  {enc:>12} | {pre:>8} | {mode:>12} | {agg:>13} | {fus:>10} | n={n} | R2={r2}")
+            print(f"  {split:>24} | {enc:>12} | {pre:>8} | {mode:>12} | {agg:>13} | {fus:>10} | n={n} | R2={r2}")
 
         generate_report_section(
             'MULTIMODAL HYBRID EXPERIMENTS (sorted by Test R2)',
@@ -727,13 +816,14 @@ def main():
         for i, (_, row) in enumerate(df_all_summary.head(top_n).iterrows()):
             r2 = format_metric(row.get('test_r2_mean'), row.get('test_r2_std'))
             cat = row.get('category', '?')
+            split = row.get('split_tag', '?')
             enc = row.get('encoder', '?')
             pre = row.get('pretrain', '?')
             mode = row.get('training_mode', '?')
             agg = row.get('aggregation', '?')
             fus = row.get('fusion_type', 'N/A')
             n = row.get('n_runs', '?')
-            print(f"  {i+1:>2}. [{cat:>15}] {enc:>12} | {pre:>8} | {mode:>12} | "
+            print(f"  {i+1:>2}. [{cat:>15}] {split:>24} | {enc:>12} | {pre:>8} | {mode:>12} | "
                   f"{agg:>15} | {fus:>10} | n={n} | R2={r2}")
 
         # Add to report
@@ -747,6 +837,7 @@ def main():
             rmse = format_metric(row.get('test_rmse_mean'), row.get('test_rmse_std'))
             mae_v = format_metric(row.get('test_mae_mean'), row.get('test_mae_std'))
             cat = row.get('category', '?')
+            split = row.get('split_tag', '?')
             enc = row.get('encoder', '?')
             pre = row.get('pretrain', '?')
             mode = row.get('training_mode', '?')
@@ -754,7 +845,7 @@ def main():
             fus = row.get('fusion_type', 'N/A')
             n = row.get('n_runs', '?')
             report_lines.append(
-                f"  {i+1:>2}. [{cat:>15}] {enc} | {pre} | {mode} | {agg} | {fus} | n={n}"
+                f"  {i+1:>2}. [{cat:>15}] {split} | {enc} | {pre} | {mode} | {agg} | {fus} | n={n}"
             )
             report_lines.append(
                 f"      R2={r2}  |  r={r}  |  RMSE={rmse}  |  MAE={mae_v}"
@@ -772,14 +863,16 @@ def main():
         df_sub = df[df['subdir'] == subdir_name]
         if df_sub.empty:
             continue
-        for mode in ['city_level', 'patch_level']:
-            df_mode = df_sub[df_sub['training_mode'] == mode]
-            if not df_mode.empty:
-                mean_r2 = df_mode['test_r2'].mean()
-                max_r2 = df_mode['test_r2'].max()
-                n = len(df_mode)
-                print(f"  {subdir_name:>18} | {mode:>12} | n={n:>4} | "
-                      f"mean_R2={mean_r2:.3f} | max_R2={max_r2:.3f}")
+        for split_tag in sorted(df_sub['split_tag'].unique()):
+            df_split = df_sub[df_sub['split_tag'] == split_tag]
+            for mode in ['city_level', 'patch_level']:
+                df_mode = df_split[df_split['training_mode'] == mode]
+                if not df_mode.empty:
+                    mean_r2 = df_mode['test_r2'].mean()
+                    max_r2 = df_mode['test_r2'].max()
+                    n = len(df_mode)
+                    print(f"  {subdir_name:>18} | {split_tag:>24} | {mode:>12} | n={n:>4} | "
+                          f"mean_R2={mean_r2:.3f} | max_R2={max_r2:.3f}")
 
     report_lines.append('=' * 80)
     report_lines.append('TRAINING MODE COMPARISON')
@@ -789,19 +882,21 @@ def main():
         df_sub = df[df['subdir'] == subdir_name]
         if df_sub.empty:
             continue
-        for mode in ['city_level', 'patch_level']:
-            df_mode = df_sub[df_sub['training_mode'] == mode]
-            if not df_mode.empty:
-                mean_r2 = df_mode['test_r2'].mean()
-                std_r2 = df_mode['test_r2'].std()
-                max_r2 = df_mode['test_r2'].max()
-                min_r2 = df_mode['test_r2'].min()
-                n = len(df_mode)
-                report_lines.append(
-                    f"  {subdir_name:>18} | {mode:>12} | n={n:>4} | "
-                    f"mean={mean_r2:.3f} +/- {std_r2:.3f} | "
-                    f"max={max_r2:.3f} | min={min_r2:.3f}"
-                )
+        for split_tag in sorted(df_sub['split_tag'].unique()):
+            df_split = df_sub[df_sub['split_tag'] == split_tag]
+            for mode in ['city_level', 'patch_level']:
+                df_mode = df_split[df_split['training_mode'] == mode]
+                if not df_mode.empty:
+                    mean_r2 = df_mode['test_r2'].mean()
+                    std_r2 = df_mode['test_r2'].std()
+                    max_r2 = df_mode['test_r2'].max()
+                    min_r2 = df_mode['test_r2'].min()
+                    n = len(df_mode)
+                    report_lines.append(
+                        f"  {subdir_name:>18} | {split_tag:>24} | {mode:>12} | n={n:>4} | "
+                        f"mean={mean_r2:.3f} +/- {std_r2:.3f} | "
+                        f"max={max_r2:.3f} | min={min_r2:.3f}"
+                    )
     report_lines.append('')
 
     # ========================================================================
@@ -813,15 +908,15 @@ def main():
         print("FUSION TYPE COMPARISON (across all multimodal)")
         print(f"{'='*80}")
 
-        fusion_summary = df_mm_all.groupby('fusion_type').agg(
+        fusion_summary = df_mm_all.groupby(['split_tag', 'fusion_type']).agg(
             n=('test_r2', 'count'),
             r2_mean=('test_r2', 'mean'),
             r2_std=('test_r2', 'std'),
             r2_max=('test_r2', 'max'),
         ).sort_values('r2_mean', ascending=False)
 
-        for fus, row in fusion_summary.iterrows():
-            print(f"  {fus:>12} | n={row['n']:>4} | "
+        for (split_tag, fus), row in fusion_summary.iterrows():
+            print(f"  {split_tag:>24} | {fus:>12} | n={row['n']:>4} | "
                   f"mean_R2={row['r2_mean']:.3f} +/- {row['r2_std']:.3f} | "
                   f"max_R2={row['r2_max']:.3f}")
 
@@ -829,9 +924,9 @@ def main():
         report_lines.append('FUSION TYPE COMPARISON (across all multimodal)')
         report_lines.append('=' * 80)
         report_lines.append('')
-        for fus, row in fusion_summary.iterrows():
+        for (split_tag, fus), row in fusion_summary.iterrows():
             report_lines.append(
-                f"  {fus:>12} | n={row['n']:>4} | "
+                f"  {split_tag:>24} | {fus:>12} | n={row['n']:>4} | "
                 f"mean_R2={row['r2_mean']:.3f} +/- {row['r2_std']:.3f} | "
                 f"max_R2={row['r2_max']:.3f}"
             )
@@ -844,15 +939,15 @@ def main():
     print("ENCODER COMPARISON (across all experiments)")
     print(f"{'='*80}")
 
-    encoder_summary = df.groupby('encoder').agg(
+    encoder_summary = df.groupby(['split_tag', 'encoder']).agg(
         n=('test_r2', 'count'),
         r2_mean=('test_r2', 'mean'),
         r2_std=('test_r2', 'std'),
         r2_max=('test_r2', 'max'),
     ).sort_values('r2_mean', ascending=False)
 
-    for enc, row in encoder_summary.iterrows():
-        print(f"  {enc:>12} | n={row['n']:>4} | "
+    for (split_tag, enc), row in encoder_summary.iterrows():
+        print(f"  {split_tag:>24} | {enc:>12} | n={row['n']:>4} | "
               f"mean_R2={row['r2_mean']:.3f} +/- {row['r2_std']:.3f} | "
               f"max_R2={row['r2_max']:.3f}")
 
@@ -860,9 +955,9 @@ def main():
     report_lines.append('ENCODER COMPARISON (across all experiments)')
     report_lines.append('=' * 80)
     report_lines.append('')
-    for enc, row in encoder_summary.iterrows():
+    for (split_tag, enc), row in encoder_summary.iterrows():
         report_lines.append(
-            f"  {enc:>12} | n={row['n']:>4} | "
+            f"  {split_tag:>24} | {enc:>12} | n={row['n']:>4} | "
             f"mean_R2={row['r2_mean']:.3f} +/- {row['r2_std']:.3f} | "
             f"max_R2={row['r2_max']:.3f}"
         )
@@ -875,15 +970,15 @@ def main():
     print("PRETRAIN METHOD COMPARISON (across all experiments)")
     print(f"{'='*80}")
 
-    pretrain_summary = df.groupby('pretrain').agg(
+    pretrain_summary = df.groupby(['split_tag', 'pretrain']).agg(
         n=('test_r2', 'count'),
         r2_mean=('test_r2', 'mean'),
         r2_std=('test_r2', 'std'),
         r2_max=('test_r2', 'max'),
     ).sort_values('r2_mean', ascending=False)
 
-    for pre, row in pretrain_summary.iterrows():
-        print(f"  {pre:>12} | n={row['n']:>4} | "
+    for (split_tag, pre), row in pretrain_summary.iterrows():
+        print(f"  {split_tag:>24} | {pre:>12} | n={row['n']:>4} | "
               f"mean_R2={row['r2_mean']:.3f} +/- {row['r2_std']:.3f} | "
               f"max_R2={row['r2_max']:.3f}")
 
@@ -891,9 +986,9 @@ def main():
     report_lines.append('PRETRAIN METHOD COMPARISON (across all experiments)')
     report_lines.append('=' * 80)
     report_lines.append('')
-    for pre, row in pretrain_summary.iterrows():
+    for (split_tag, pre), row in pretrain_summary.iterrows():
         report_lines.append(
-            f"  {pre:>12} | n={row['n']:>4} | "
+            f"  {split_tag:>24} | {pre:>12} | n={row['n']:>4} | "
             f"mean_R2={row['r2_mean']:.3f} +/- {row['r2_std']:.3f} | "
             f"max_R2={row['r2_max']:.3f}"
         )
@@ -908,15 +1003,15 @@ def main():
         print("AGGREGATION STRATEGY COMPARISON (patch-level only)")
         print(f"{'='*80}")
 
-        agg_summary = df_patch.groupby('aggregation').agg(
+        agg_summary = df_patch.groupby(['split_tag', 'aggregation']).agg(
             n=('test_r2', 'count'),
             r2_mean=('test_r2', 'mean'),
             r2_std=('test_r2', 'std'),
             r2_max=('test_r2', 'max'),
         ).sort_values('r2_mean', ascending=False)
 
-        for agg, row in agg_summary.iterrows():
-            print(f"  {agg:>15} | n={row['n']:>4} | "
+        for (split_tag, agg), row in agg_summary.iterrows():
+            print(f"  {split_tag:>24} | {agg:>15} | n={row['n']:>4} | "
                   f"mean_R2={row['r2_mean']:.3f} +/- {row['r2_std']:.3f} | "
                   f"max_R2={row['r2_max']:.3f}")
 
@@ -924,9 +1019,9 @@ def main():
         report_lines.append('AGGREGATION STRATEGY COMPARISON (patch-level only)')
         report_lines.append('=' * 80)
         report_lines.append('')
-        for agg, row in agg_summary.iterrows():
+        for (split_tag, agg), row in agg_summary.iterrows():
             report_lines.append(
-                f"  {agg:>15} | n={row['n']:>4} | "
+                f"  {split_tag:>24} | {agg:>15} | n={row['n']:>4} | "
                 f"mean_R2={row['r2_mean']:.3f} +/- {row['r2_std']:.3f} | "
                 f"max_R2={row['r2_max']:.3f}"
             )
@@ -941,15 +1036,15 @@ def main():
         print("POLICY SOURCE COMPARISON")
         print(f"{'='*80}")
 
-        ps_summary = df_policy.groupby('policy_source').agg(
+        ps_summary = df_policy.groupby(['split_tag', 'policy_source']).agg(
             n=('test_r2', 'count'),
             r2_mean=('test_r2', 'mean'),
             r2_std=('test_r2', 'std'),
             r2_max=('test_r2', 'max'),
         ).sort_values('r2_mean', ascending=False)
 
-        for ps, row in ps_summary.iterrows():
-            print(f"  {ps:>12} | n={row['n']:>4} | "
+        for (split_tag, ps), row in ps_summary.iterrows():
+            print(f"  {split_tag:>24} | {ps:>12} | n={row['n']:>4} | "
                   f"mean_R2={row['r2_mean']:.3f} +/- {row['r2_std']:.3f} | "
                   f"max_R2={row['r2_max']:.3f}")
 
@@ -957,9 +1052,9 @@ def main():
         report_lines.append('POLICY SOURCE COMPARISON')
         report_lines.append('=' * 80)
         report_lines.append('')
-        for ps, row in ps_summary.iterrows():
+        for (split_tag, ps), row in ps_summary.iterrows():
             report_lines.append(
-                f"  {ps:>12} | n={row['n']:>4} | "
+                f"  {split_tag:>24} | {ps:>12} | n={row['n']:>4} | "
                 f"mean_R2={row['r2_mean']:.3f} +/- {row['r2_std']:.3f} | "
                 f"max_R2={row['r2_max']:.3f}"
             )
@@ -999,6 +1094,7 @@ def main():
     print(f"Unique fusion types: {sorted(df[df['fusion_type'] != 'N/A']['fusion_type'].unique())}")
     print(f"Unique aggregation methods: {sorted(df['aggregation'].unique())}")
     print(f"Unique policy sources: {sorted(df[df['policy_source'] != 'N/A']['policy_source'].unique())}")
+    print(f"Unique split tags: {sorted(df['split_tag'].unique())}")
     print(f"Seed values: {sorted(df['seed'].unique())}")
     print()
 
@@ -1007,7 +1103,7 @@ def main():
     print(f"  File: {best_row['subdir']}/{best_row['filename']}")
     print(f"  Config: encoder={best_row['encoder']}, pretrain={best_row['pretrain']}, "
           f"mode={best_row['training_mode']}, agg={best_row['aggregation']}, "
-          f"fusion={best_row['fusion_type']}")
+          f"fusion={best_row['fusion_type']}, split={best_row['split_tag']}")
     print(f"  Test R2={best_row['test_r2']:.4f}, "
           f"r={best_row['test_pearson_r']:.4f}, "
           f"RMSE={best_row['test_rmse']:.4f}, "

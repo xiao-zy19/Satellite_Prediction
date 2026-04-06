@@ -611,7 +611,11 @@ def run_bert_multimodal_experiment(
     seed: int = config.RANDOM_SEED,
     normalize_on_gpu: bool = False,
     cache_dir: str = "policy_bert_cache",
-    no_wandb: bool = False
+    no_wandb: bool = False,
+    temporal_split: bool = False,
+    train_years: list[int] = None,
+    val_years: list[int] = None,
+    test_years: list[int] = None
 ):
     """Run a single BERT multimodal experiment.
 
@@ -640,6 +644,13 @@ def run_bert_multimodal_experiment(
         run_id = f"{exp_name}_seed{seed}"
     else:
         run_id = exp_name
+    if temporal_split:
+        if not train_years or not val_years or not test_years:
+            raise ValueError("--temporal_split requires --train_years, --val_years, and --test_years")
+        import hashlib
+        split_key = f"{sorted(train_years)}|{sorted(val_years)}|{sorted(test_years)}"
+        split_hash = hashlib.md5(split_key.encode()).hexdigest()[:6]
+        run_id = f"{run_id}_temporal_{split_hash}"
 
     # Get policy source config (needed for log directory)
     policy_source_config = exp_config.model_config.policy_source
@@ -737,6 +748,8 @@ def run_bert_multimodal_experiment(
     # Load Multimodal Data
     # ==========================================================================
     logger.info("Loading data with BERT policy features...")
+    if temporal_split:
+        logger.info(f"Temporal split: train={train_years}, val={val_years}, test={test_years}")
     if is_patch_level:
         train_loader, val_loader, test_loader, dataset_info = get_patch_level_bert_policy_dataloaders(
             policy_source=policy_source,
@@ -744,7 +757,11 @@ def run_bert_multimodal_experiment(
             batch_size=exp_config.train_config.batch_size,
             num_workers=exp_config.num_workers,
             seed=seed,
-            normalize_on_gpu=normalize_on_gpu
+            normalize_on_gpu=normalize_on_gpu,
+            temporal_split=temporal_split,
+            train_years=train_years,
+            val_years=val_years,
+            test_years=test_years
         )
         logger.info(f"Patch-level mode: {dataset_info['num_train_patches']} training patches "
                     f"from {dataset_info['num_train']} city-year samples")
@@ -755,7 +772,11 @@ def run_bert_multimodal_experiment(
             batch_size=exp_config.train_config.batch_size,
             num_workers=exp_config.num_workers,
             seed=seed,
-            normalize_on_gpu=normalize_on_gpu
+            normalize_on_gpu=normalize_on_gpu,
+            temporal_split=temporal_split,
+            train_years=train_years,
+            val_years=val_years,
+            test_years=test_years
         )
 
     # Init wandb
@@ -868,6 +889,7 @@ def run_bert_multimodal_experiment(
             'model_params': count_parameters(model),
             'fusion_type': exp_config.model_config.fusion_type,
             'image_encoder': exp_config.model_config.image_encoder_type,
+            'temporal_split': temporal_split,
             'val_results': {
                 agg: {
                     'metrics': val_results[agg]['metrics'],
@@ -885,6 +907,10 @@ def run_bert_multimodal_experiment(
                 } for agg in ['mean', 'median', 'trimmed_mean']
             }
         }
+        if temporal_split:
+            results['train_years'] = train_years
+            results['val_years'] = val_years
+            results['test_years'] = test_years
 
     else:
         # City-level
@@ -933,8 +959,13 @@ def run_bert_multimodal_experiment(
             'test_metrics': test_metrics,
             'test_y_true': test_y_true,
             'test_y_pred': test_y_pred,
-            'test_info': test_info
+            'test_info': test_info,
+            'temporal_split': temporal_split,
         }
+        if temporal_split:
+            results['train_years'] = train_years
+            results['val_years'] = val_years
+            results['test_years'] = test_years
 
     # Save results to dedicated subfolder based on policy source
     # structured -> Multimodal/, bert -> MultimodalBert/, hybrid -> MultimodalHybrid/
@@ -967,6 +998,14 @@ def main():
                         help="BERT cache directory")
     parser.add_argument('--no-wandb', action='store_true',
                         help="Disable wandb logging")
+    parser.add_argument('--temporal_split', action='store_true',
+                        help="Use temporal (year-based) split instead of random city split")
+    parser.add_argument('--train_years', type=int, nargs='+', default=None,
+                        help="Training years for temporal split (e.g. 2018 2019 2020 2021)")
+    parser.add_argument('--val_years', type=int, nargs='+', default=None,
+                        help="Validation years for temporal split (e.g. 2022)")
+    parser.add_argument('--test_years', type=int, nargs='+', default=None,
+                        help="Test years for temporal split (e.g. 2023)")
     args = parser.parse_args()
 
     run_bert_multimodal_experiment(
@@ -975,7 +1014,11 @@ def main():
         args.seed,
         normalize_on_gpu=args.normalize_on_gpu,
         cache_dir=args.cache_dir,
-        no_wandb=args.no_wandb
+        no_wandb=args.no_wandb,
+        temporal_split=args.temporal_split,
+        train_years=args.train_years,
+        val_years=args.val_years,
+        test_years=args.test_years
     )
 
 

@@ -329,7 +329,11 @@ def get_policy_dataloaders(
     augment_train: bool = True,
     seed: int = config.RANDOM_SEED,
     normalize_on_gpu: bool = False,
-    policy_lag: int = 1
+    policy_lag: int = 1,
+    temporal_split: bool = False,
+    train_years: List[int] = None,
+    val_years: List[int] = None,
+    test_years: List[int] = None
 ) -> Tuple[DataLoader, DataLoader, DataLoader, Dict]:
     """
     Create train, validation, and test dataloaders with policy features (city-level).
@@ -341,6 +345,10 @@ def get_policy_dataloaders(
         seed: Random seed for reproducibility
         normalize_on_gpu: If True, skip CPU normalization (will be done on GPU during training)
         policy_lag: Policy temporal lag in years (default: 1)
+        temporal_split: If True, split by year instead of randomly
+        train_years: Years for training set (temporal split only)
+        val_years: Years for validation set (temporal split only)
+        test_years: Years for test set (temporal split only)
 
     Returns:
         train_loader, val_loader, test_loader, dataset_info
@@ -357,8 +365,17 @@ def get_policy_dataloaders(
     samples = create_dataset_samples(pop_df, sat_data)
     print(f"Total valid samples: {len(samples)}")
 
-    print(f"Splitting dataset (seed={seed})...")
-    train_samples, val_samples, test_samples = split_dataset(samples, seed=seed)
+    if temporal_split:
+        print(f"Splitting dataset by year (temporal split)...")
+    else:
+        print(f"Splitting dataset (seed={seed})...")
+    train_samples, val_samples, test_samples = split_dataset(
+        samples, seed=seed,
+        temporal_split=temporal_split,
+        train_years=train_years,
+        val_years=val_years,
+        test_years=test_years
+    )
 
     print(f"  Train: {len(train_samples)} samples")
     print(f"  Val: {len(val_samples)} samples")
@@ -415,8 +432,13 @@ def get_policy_dataloaders(
         'policy_feature_dim': 12,
         'seed': seed,
         'normalize_on_gpu': normalize_on_gpu,
-        'policy_lag': policy_lag
+        'policy_lag': policy_lag,
+        'temporal_split': temporal_split,
     }
+    if temporal_split:
+        dataset_info['train_years'] = train_years
+        dataset_info['val_years'] = val_years
+        dataset_info['test_years'] = test_years
 
     return train_loader, val_loader, test_loader, dataset_info
 
@@ -427,7 +449,11 @@ def get_patch_level_policy_dataloaders(
     augment_train: bool = True,
     seed: int = config.RANDOM_SEED,
     normalize_on_gpu: bool = False,
-    policy_lag: int = 1
+    policy_lag: int = 1,
+    temporal_split: bool = False,
+    train_years: List[int] = None,
+    val_years: List[int] = None,
+    test_years: List[int] = None
 ) -> Tuple[DataLoader, DataLoader, DataLoader, Dict]:
     """
     Create patch-level dataloaders with policy features.
@@ -439,6 +465,10 @@ def get_patch_level_policy_dataloaders(
         seed: Random seed for reproducibility
         normalize_on_gpu: If True, skip CPU normalization (will be done on GPU during training)
         policy_lag: Policy temporal lag in years (default: 1)
+        temporal_split: If True, split by year instead of randomly
+        train_years: Years for training set (temporal split only)
+        val_years: Years for validation set (temporal split only)
+        test_years: Years for test set (temporal split only)
 
     Returns:
         train_loader, val_loader, test_loader, dataset_info
@@ -455,8 +485,17 @@ def get_patch_level_policy_dataloaders(
     samples = create_dataset_samples(pop_df, sat_data)
     print(f"Total valid city-year samples: {len(samples)}")
 
-    print(f"Splitting dataset by city (seed={seed})...")
-    train_samples, val_samples, test_samples = split_dataset(samples, seed=seed)
+    if temporal_split:
+        print(f"Splitting dataset by year (temporal split)...")
+    else:
+        print(f"Splitting dataset by city (seed={seed})...")
+    train_samples, val_samples, test_samples = split_dataset(
+        samples, seed=seed,
+        temporal_split=temporal_split,
+        train_years=train_years,
+        val_years=val_years,
+        test_years=test_years
+    )
 
     print(f"  Train: {len(train_samples)} city-years -> {len(train_samples) * config.NUM_PATCHES_TOTAL} patches")
     print(f"  Val: {len(val_samples)} city-years -> {len(val_samples) * config.NUM_PATCHES_TOTAL} patches")
@@ -518,8 +557,13 @@ def get_patch_level_policy_dataloaders(
         'policy_feature_dim': 12,
         'seed': seed,
         'normalize_on_gpu': normalize_on_gpu,
-        'policy_lag': policy_lag
+        'policy_lag': policy_lag,
+        'temporal_split': temporal_split,
     }
+    if temporal_split:
+        dataset_info['train_years'] = train_years
+        dataset_info['val_years'] = val_years
+        dataset_info['test_years'] = test_years
 
     return train_loader, val_loader, test_loader, dataset_info
 

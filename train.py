@@ -657,7 +657,9 @@ def evaluate_patch_level(model, data_loader, device, num_patches: int = 25,
 
 
 def run_experiment(exp_name: str, gpu_id: int = 3, seed: int = config.RANDOM_SEED,
-                   normalize_on_gpu: bool = False):
+                   normalize_on_gpu: bool = False,
+                   temporal_split: bool = False, train_years: list[int] = None,
+                   val_years: list[int] = None, test_years: list[int] = None):
     """Run a single experiment.
 
     Args:
@@ -679,6 +681,13 @@ def run_experiment(exp_name: str, gpu_id: int = 3, seed: int = config.RANDOM_SEE
         run_id = f"{exp_name}_seed{seed}"
     else:
         run_id = exp_name
+    if temporal_split:
+        if not train_years or not val_years or not test_years:
+            raise ValueError("--temporal_split requires --train_years, --val_years, and --test_years")
+        import hashlib
+        split_key = f"{sorted(train_years)}|{sorted(val_years)}|{sorted(test_years)}"
+        split_hash = hashlib.md5(split_key.encode()).hexdigest()[:6]
+        run_id = f"{run_id}_temporal_{split_hash}"
 
     # Set seed for reproducibility
     print(f"Setting random seed: {seed}")
@@ -702,13 +711,19 @@ def run_experiment(exp_name: str, gpu_id: int = 3, seed: int = config.RANDOM_SEE
     logger.info("Loading data...")
     logger.info(f"Using seed {seed} for data splitting")
     logger.info(f"GPU Normalization: {normalize_on_gpu}")
+    if temporal_split:
+        logger.info(f"Temporal split: train={train_years}, val={val_years}, test={test_years}")
     if is_patch_level:
         # Patch-level training: each patch is an independent sample
         train_loader, val_loader, test_loader, dataset_info = get_patch_level_dataloaders(
             batch_size=exp_config.train_config.batch_size,
             num_workers=exp_config.num_workers,
             seed=seed,
-            normalize_on_gpu=normalize_on_gpu
+            normalize_on_gpu=normalize_on_gpu,
+            temporal_split=temporal_split,
+            train_years=train_years,
+            val_years=val_years,
+            test_years=test_years
         )
         logger.info(f"Patch-level mode: {dataset_info['num_train_patches']} training patches "
                     f"from {dataset_info['num_train']} city-year samples")
@@ -718,7 +733,11 @@ def run_experiment(exp_name: str, gpu_id: int = 3, seed: int = config.RANDOM_SEE
             batch_size=exp_config.train_config.batch_size,
             num_workers=exp_config.num_workers,
             seed=seed,
-            normalize_on_gpu=normalize_on_gpu
+            normalize_on_gpu=normalize_on_gpu,
+            temporal_split=temporal_split,
+            train_years=train_years,
+            val_years=val_years,
+            test_years=test_years
         )
 
     # Init wandb
@@ -871,6 +890,7 @@ def run_experiment(exp_name: str, gpu_id: int = 3, seed: int = config.RANDOM_SEE
             'model_params': count_parameters(model),
             'use_pretrain': exp_config.use_pretrain,
             'pretrain_method': exp_config.pretrain_config.name if exp_config.pretrain_config else None,
+            'temporal_split': temporal_split,
             # All 6 combinations of results
             'val_results': {
                 agg: {
@@ -889,6 +909,10 @@ def run_experiment(exp_name: str, gpu_id: int = 3, seed: int = config.RANDOM_SEE
                 } for agg in ['mean', 'median', 'trimmed_mean']
             }
         }
+        if temporal_split:
+            results['train_years'] = train_years
+            results['val_years'] = val_years
+            results['test_years'] = test_years
 
     else:
         # City-level: evaluate using model's built-in aggregation ONLY
@@ -937,8 +961,13 @@ def run_experiment(exp_name: str, gpu_id: int = 3, seed: int = config.RANDOM_SEE
             'test_metrics': test_metrics,
             'test_y_true': test_y_true,
             'test_y_pred': test_y_pred,
-            'test_info': test_info
+            'test_info': test_info,
+            'temporal_split': temporal_split,
         }
+        if temporal_split:
+            results['train_years'] = train_years
+            results['val_years'] = val_years
+            results['test_years'] = test_years
 
     result_dir = os.path.join(config.RESULT_DIR, 'Baseline')
     os.makedirs(result_dir, exist_ok=True)
@@ -959,9 +988,22 @@ def main():
                         help=f"Random seed for reproducibility (default: {config.RANDOM_SEED})")
     parser.add_argument('--normalize_on_gpu', action='store_true',
                         help="Perform normalization on GPU instead of CPU (faster)")
+    parser.add_argument('--temporal_split', action='store_true',
+                        help="Use temporal (year-based) split instead of random city split")
+    parser.add_argument('--train_years', type=int, nargs='+', default=None,
+                        help="Training years for temporal split (e.g. 2018 2019 2020 2021)")
+    parser.add_argument('--val_years', type=int, nargs='+', default=None,
+                        help="Validation years for temporal split (e.g. 2022)")
+    parser.add_argument('--test_years', type=int, nargs='+', default=None,
+                        help="Test years for temporal split (e.g. 2023)")
     args = parser.parse_args()
 
-    run_experiment(args.exp, args.gpu, args.seed, normalize_on_gpu=args.normalize_on_gpu)
+    run_experiment(args.exp, args.gpu, args.seed,
+                   normalize_on_gpu=args.normalize_on_gpu,
+                   temporal_split=args.temporal_split,
+                   train_years=args.train_years,
+                   val_years=args.val_years,
+                   test_years=args.test_years)
 
 
 if __name__ == "__main__":

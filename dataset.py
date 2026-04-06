@@ -598,44 +598,104 @@ def split_dataset(
     train_ratio: float = config.TRAIN_RATIO,
     val_ratio: float = config.VAL_RATIO,
     seed: int = config.RANDOM_SEED,
-    stratify_by_city: bool = True
+    stratify_by_city: bool = True,
+    temporal_split: bool = False,
+    train_years: List[int] = None,
+    val_years: List[int] = None,
+    test_years: List[int] = None
 ) -> Tuple[List[Dict], List[Dict], List[Dict]]:
-    """Split samples into train/val/test sets."""
-    random.seed(seed)
-    np.random.seed(seed)
+    """Split samples into train/val/test sets.
 
-    if stratify_by_city:
-        city_samples = {}
-        for s in samples:
-            city = s['city']
-            if city not in city_samples:
-                city_samples[city] = []
-            city_samples[city].append(s)
+    Args:
+        samples: List of sample dicts, each must have 'city' and 'year' keys.
+        train_ratio: Fraction of cities/samples for training (random split only).
+        val_ratio: Fraction of cities/samples for validation (random split only).
+        seed: Random seed for reproducible splitting (random split only).
+        stratify_by_city: If True, split at city level so all years of a city
+            stay in the same set (random split only).
+        temporal_split: If True, split by year instead of randomly.
+        train_years: Years for training set (temporal split only).
+        val_years: Years for validation set (temporal split only).
+        test_years: Years for test set (temporal split only).
+    """
+    if temporal_split:
+        if not train_years or not val_years or not test_years:
+            raise ValueError("temporal_split requires non-empty train_years, val_years, and test_years")
 
-        cities = sorted(city_samples.keys())
-        random.shuffle(cities)
+        train_set = set(train_years)
+        val_set = set(val_years)
+        test_set = set(test_years)
 
-        n_cities = len(cities)
-        n_train = int(n_cities * train_ratio)
-        n_val = int(n_cities * val_ratio)
+        overlap = (train_set & val_set) | (train_set & test_set) | (val_set & test_set)
+        if overlap:
+            raise ValueError(f"Year sets must not overlap, found overlap: {overlap}")
 
-        train_cities = set(cities[:n_train])
-        val_cities = set(cities[n_train:n_train + n_val])
-        test_cities = set(cities[n_train + n_val:])
+        # Check that specified years actually exist in the data
+        available_years = set(s['year'] for s in samples)
+        for name, year_set in [('train_years', train_set), ('val_years', val_set), ('test_years', test_set)]:
+            missing = year_set - available_years
+            if missing:
+                raise ValueError(
+                    f"{name} contains years with no data: {sorted(missing)}. "
+                    f"Available years: {sorted(available_years)}"
+                )
 
-        train_samples = [s for s in samples if s['city'] in train_cities]
-        val_samples = [s for s in samples if s['city'] in val_cities]
-        test_samples = [s for s in samples if s['city'] in test_cities]
+        train_samples = [s for s in samples if s['year'] in train_set]
+        val_samples = [s for s in samples if s['year'] in val_set]
+        test_samples = [s for s in samples if s['year'] in test_set]
+
+        # Validate non-empty splits
+        if not train_samples:
+            raise ValueError(f"Train set is empty for years {sorted(train_set)}")
+        if not val_samples:
+            raise ValueError(f"Validation set is empty for years {sorted(val_set)}")
+        if not test_samples:
+            raise ValueError(f"Test set is empty for years {sorted(test_set)}")
+
+        # Warn about samples dropped (years not in any set)
+        all_specified = train_set | val_set | test_set
+        dropped = [s for s in samples if s['year'] not in all_specified]
+        if dropped:
+            print(f"  Warning: {len(dropped)} samples dropped (years not in any split set)")
+
+        print(f"  Temporal split: train_years={sorted(train_set)}, "
+              f"val_years={sorted(val_set)}, test_years={sorted(test_set)}")
     else:
-        samples_copy = samples.copy()
-        random.shuffle(samples_copy)
-        n = len(samples_copy)
-        n_train = int(n * train_ratio)
-        n_val = int(n * val_ratio)
+        random.seed(seed)
+        np.random.seed(seed)
 
-        train_samples = samples_copy[:n_train]
-        val_samples = samples_copy[n_train:n_train + n_val]
-        test_samples = samples_copy[n_train + n_val:]
+        if stratify_by_city:
+            city_samples = {}
+            for s in samples:
+                city = s['city']
+                if city not in city_samples:
+                    city_samples[city] = []
+                city_samples[city].append(s)
+
+            cities = sorted(city_samples.keys())
+            random.shuffle(cities)
+
+            n_cities = len(cities)
+            n_train = int(n_cities * train_ratio)
+            n_val = int(n_cities * val_ratio)
+
+            train_cities = set(cities[:n_train])
+            val_cities = set(cities[n_train:n_train + n_val])
+            test_cities = set(cities[n_train + n_val:])
+
+            train_samples = [s for s in samples if s['city'] in train_cities]
+            val_samples = [s for s in samples if s['city'] in val_cities]
+            test_samples = [s for s in samples if s['city'] in test_cities]
+        else:
+            samples_copy = samples.copy()
+            random.shuffle(samples_copy)
+            n = len(samples_copy)
+            n_train = int(n * train_ratio)
+            n_val = int(n * val_ratio)
+
+            train_samples = samples_copy[:n_train]
+            val_samples = samples_copy[n_train:n_train + n_val]
+            test_samples = samples_copy[n_train + n_val:]
 
     return train_samples, val_samples, test_samples
 
@@ -646,7 +706,11 @@ def get_dataloaders(
     augment_train: bool = True,
     contrastive: bool = False,
     seed: int = config.RANDOM_SEED,
-    normalize_on_gpu: bool = False
+    normalize_on_gpu: bool = False,
+    temporal_split: bool = False,
+    train_years: List[int] = None,
+    val_years: List[int] = None,
+    test_years: List[int] = None
 ) -> Tuple[DataLoader, DataLoader, DataLoader, Dict]:
     """Create train, validation, and test dataloaders.
 
@@ -657,6 +721,10 @@ def get_dataloaders(
         contrastive: Whether to return contrastive pairs (for SimCLR)
         seed: Random seed for reproducible data splitting
         normalize_on_gpu: If True, skip CPU normalization (will be done on GPU during training)
+        temporal_split: If True, split by year instead of randomly
+        train_years: Years for training set (temporal split only)
+        val_years: Years for validation set (temporal split only)
+        test_years: Years for test set (temporal split only)
 
     Returns:
         train_loader, val_loader, test_loader, dataset_info
@@ -671,8 +739,17 @@ def get_dataloaders(
     samples = create_dataset_samples(pop_df, sat_data)
     print(f"Total valid samples: {len(samples)}")
 
-    print(f"Splitting dataset (seed={seed})...")
-    train_samples, val_samples, test_samples = split_dataset(samples, seed=seed)
+    if temporal_split:
+        print(f"Splitting dataset by year (temporal split)...")
+    else:
+        print(f"Splitting dataset (seed={seed})...")
+    train_samples, val_samples, test_samples = split_dataset(
+        samples, seed=seed,
+        temporal_split=temporal_split,
+        train_years=train_years,
+        val_years=val_years,
+        test_years=test_years
+    )
 
     print(f"  Train: {len(train_samples)} samples")
     print(f"  Val: {len(val_samples)} samples")
@@ -730,8 +807,13 @@ def get_dataloaders(
         'train_samples': train_samples,
         'val_samples': val_samples,
         'test_samples': test_samples,
-        'seed': seed
+        'seed': seed,
+        'temporal_split': temporal_split,
     }
+    if temporal_split:
+        dataset_info['train_years'] = train_years
+        dataset_info['val_years'] = val_years
+        dataset_info['test_years'] = test_years
 
     return train_loader, val_loader, test_loader, dataset_info
 
@@ -761,7 +843,11 @@ def get_patch_level_dataloaders(
     num_workers: int = 4,
     augment_train: bool = True,
     seed: int = config.RANDOM_SEED,
-    normalize_on_gpu: bool = False
+    normalize_on_gpu: bool = False,
+    temporal_split: bool = False,
+    train_years: List[int] = None,
+    val_years: List[int] = None,
+    test_years: List[int] = None
 ) -> Tuple[DataLoader, DataLoader, DataLoader, Dict]:
     """
     Create patch-level dataloaders where each patch is an independent sample.
@@ -776,6 +862,10 @@ def get_patch_level_dataloaders(
         augment_train: Whether to apply data augmentation on training data
         seed: Random seed for reproducible data splitting
         normalize_on_gpu: If True, skip CPU normalization (will be done on GPU during training)
+        temporal_split: If True, split by year instead of randomly
+        train_years: Years for training set (temporal split only)
+        val_years: Years for validation set (temporal split only)
+        test_years: Years for test set (temporal split only)
 
     Returns:
         train_loader, val_loader, test_loader, dataset_info
@@ -790,8 +880,17 @@ def get_patch_level_dataloaders(
     samples = create_dataset_samples(pop_df, sat_data)
     print(f"Total valid city-year samples: {len(samples)}")
 
-    print(f"Splitting dataset by city (seed={seed})...")
-    train_samples, val_samples, test_samples = split_dataset(samples, seed=seed)
+    if temporal_split:
+        print(f"Splitting dataset by year (temporal split)...")
+    else:
+        print(f"Splitting dataset by city (seed={seed})...")
+    train_samples, val_samples, test_samples = split_dataset(
+        samples, seed=seed,
+        temporal_split=temporal_split,
+        train_years=train_years,
+        val_years=val_years,
+        test_years=test_years
+    )
 
     print(f"  Train: {len(train_samples)} city-years -> {len(train_samples) * config.NUM_PATCHES_TOTAL} patches")
     print(f"  Val: {len(val_samples)} city-years -> {len(val_samples) * config.NUM_PATCHES_TOTAL} patches")
@@ -853,8 +952,13 @@ def get_patch_level_dataloaders(
         'test_samples': test_samples,
         'num_patches_per_city': config.NUM_PATCHES_TOTAL,
         'training_mode': 'patch_level',
-        'seed': seed
+        'seed': seed,
+        'temporal_split': temporal_split,
     }
+    if temporal_split:
+        dataset_info['train_years'] = train_years
+        dataset_info['val_years'] = val_years
+        dataset_info['test_years'] = test_years
 
     return train_loader, val_loader, test_loader, dataset_info
 

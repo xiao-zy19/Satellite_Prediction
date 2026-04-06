@@ -316,11 +316,22 @@ def main():
                         help="Data split to evaluate on")
     parser.add_argument('--output_dir', type=str, default=None,
                         help="Output directory for results")
+    parser.add_argument('--temporal_split', action='store_true',
+                        help="Use temporal (year-based) split instead of random city split")
+    parser.add_argument('--train_years', type=int, nargs='+', default=None,
+                        help="Training years for temporal split (e.g. 2018 2019 2020 2021)")
+    parser.add_argument('--val_years', type=int, nargs='+', default=None,
+                        help="Validation years for temporal split (e.g. 2022)")
+    parser.add_argument('--test_years', type=int, nargs='+', default=None,
+                        help="Test years for temporal split (e.g. 2023)")
     args = parser.parse_args()
 
     # Validate arguments
     if args.exp is None and args.checkpoint is None:
         parser.error("Either --exp or --checkpoint must be specified")
+
+    if args.temporal_split and (not args.train_years or not args.val_years or not args.test_years):
+        parser.error("--temporal_split requires --train_years, --val_years, and --test_years")
 
     # Set GPU
     os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu)
@@ -382,15 +393,26 @@ def main():
 
     # Load data based on training mode
     print("\nLoading data...")
+    temporal_kwargs = {}
+    if args.temporal_split:
+        temporal_kwargs = dict(
+            temporal_split=True,
+            train_years=args.train_years,
+            val_years=args.val_years,
+            test_years=args.test_years
+        )
+        print(f"Temporal split: train={args.train_years}, val={args.val_years}, test={args.test_years}")
     if is_patch_level:
         train_loader, val_loader, test_loader, dataset_info = get_patch_level_dataloaders(
             batch_size=64,
-            num_workers=4
+            num_workers=4,
+            **temporal_kwargs
         )
     else:
         train_loader, val_loader, test_loader, dataset_info = get_dataloaders(
             batch_size=16,
-            num_workers=4
+            num_workers=4,
+            **temporal_kwargs
         )
 
     # Select data split

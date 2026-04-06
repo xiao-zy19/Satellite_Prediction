@@ -4,6 +4,8 @@
 
 本项目比较了不同模型架构（MLP、LightCNN、ResNet、**Multimodal**、**Multimodal-BERT**）和不同预训练策略（无预训练、SimCLR、MAE、ImageNet）对人口增长率预测性能的影响。
 
+**v3.9 新增**: Temporal Split（按年份划分数据集），支持时间维度泛化性验证；全链路贯通 train/evaluate/analyze，结果分析按 `split_tag` 自动分组。
+
 **v3.8 新增**: BERT 端到端训练模式——缓存 768 维原始隐状态，投影层（768→256→64）在下游模型中端到端训练；自动启用 trainable policy encoder。
 
 **v3.7 新增**: 政策时间滞后（Policy Lag）敏感性分析，支持 `--policy_lag` 和 `--result_dir` 参数；新增政策特征贡献度分析工具；补全 ResNet patch-level 基线实验。
@@ -267,6 +269,30 @@ python train_multimodal.py --exp mm_mae_cnn_film_patch --gpu 3 --policy_lag 0 \
 bash scripts/ablation/run_policy_lag_sensitivity.sh --gpus 2 --resume
 
 # ============================================
+# Temporal Split（按年份划分数据集）[NEW v3.9]
+# ============================================
+
+# 基线模型：前5年训练，第6年验证，第7年测试
+python train.py --exp light_cnn_patch_level --gpu 3 --seed 42 \
+    --temporal_split --train_years 2018 2019 2020 2021 2022 \
+    --val_years 2023 --test_years 2024
+
+# 多模态模型
+python train_multimodal.py --exp mm_mae_cnn_film_patch --gpu 3 --seed 42 \
+    --temporal_split --train_years 2018 2019 2020 2021 2022 \
+    --val_years 2023 --test_years 2024
+
+# BERT 多模态
+python train_multimodal_bert.py --exp bert_mm_cnn_concat --gpu 3 --seed 42 \
+    --temporal_split --train_years 2018 2019 2020 2021 2022 \
+    --val_years 2023 --test_years 2024
+
+# 评估（需要与训练时使用相同的划分方案）
+python evaluate.py --exp light_cnn_patch_level --gpu 0 --split test \
+    --temporal_split --train_years 2018 2019 2020 2021 2022 \
+    --val_years 2023 --test_years 2024
+
+# ============================================
 # Mixture of Experts (MoE) 实验 [NEW v3.5]
 # ============================================
 
@@ -344,7 +370,7 @@ python compare_results.py
 - **嵌入维度**: 64 通道
 - **Patch 划分**: 5×5 = 25 个 patch，每个 2km × 2km (200×200 像素)
 - **时间范围**: 2018-2024 年
-- **数据划分**: 65% 训练 / 15% 验证 / 20% 测试（按城市分层）
+- **数据划分**: 65% 训练 / 15% 验证 / 20% 测试（按城市分层），或按年份划分（Temporal Split） [v3.9]
 
 ### 预处理格式
 
@@ -506,6 +532,10 @@ python run_extraction.py
 | `--normalize_on_gpu` | GPU 归一化 | False |
 | `--policy_lag` | 政策时间滞后（年）| 1 |
 | `--result_dir` | 自定义结果目录 | `config.RESULT_DIR` |
+| `--temporal_split` | 启用按年份划分 [v3.9] | False |
+| `--train_years` | 训练集年份（temporal split 时必需）[v3.9] | None |
+| `--val_years` | 验证集年份（temporal split 时必需）[v3.9] | None |
+| `--test_years` | 测试集年份（temporal split 时必需）[v3.9] | None |
 
 **适用实验**: `mm_cnn_*`, `mm_mlp_*`, `mm_resnet*_*`
 
@@ -1188,11 +1218,14 @@ pretrain_epochs = 50
 pretrain_lr = 1e-3
 freeze_encoder_epochs = 5
 
-# 数据划分
+# 数据划分（随机按城市分层，默认）
 TRAIN_RATIO = 0.65
 VAL_RATIO = 0.15
 TEST_RATIO = 0.20
 RANDOM_SEED = 42         # 随机种子（可通过命令行 --seed 覆盖）
+
+# 或使用 Temporal Split（按年份划分，v3.9）
+# --temporal_split --train_years 2018 2019 2020 2021 2022 --val_years 2023 --test_years 2024
 ```
 
 ### 实验复现
@@ -1208,7 +1241,7 @@ python train.py --exp mlp_baseline --gpu 3 --seed 42
 ```
 
 **复现机制**：
-- 数据划分：使用 seed 控制城市的 train/val/test 划分
+- 数据划分：使用 seed 控制城市的 train/val/test 划分（随机模式），或使用 `--temporal_split` 按年份确定性划分（v3.9）
   - **v3.5 修复**：城市遍历顺序使用 `sorted()` 确保确定性，不再受 `PYTHONHASHSEED` 影响
 - DataLoader shuffle：使用 seed 控制每个 epoch 的数据顺序
 - 模型初始化：使用 seed 控制权重初始化
@@ -1242,6 +1275,15 @@ bash scripts/baseline/run_simple.sh --exp mlp_baseline --seeds 42,123,456
 | 0 | 123 | `mm_mae_cnn_film_patch_lag0_seed123` | `mm_mae_cnn_film_patch_lag0_seed123_results.pkl` |
 | 1 (默认) | 42 | `mm_mae_cnn_film_patch` | `mm_mae_cnn_film_patch_results.pkl` |
 | 2 | 456 | `mm_mae_cnn_film_patch_lag2_seed456` | `mm_mae_cnn_film_patch_lag2_seed456_results.pkl` |
+
+**Temporal Split 命名规则** [v3.9]（`--temporal_split` 时追加 `_temporal_{hash}` 后缀，hash 为年份组合的 6 位 MD5）：
+
+| 划分方案 | Seed | run_id | 结果文件 |
+|---------|------|--------|----------|
+| train=2018-2022, val=2023, test=2024 | 42 | `light_cnn_patch_level_temporal_3b97a8` | `light_cnn_patch_level_temporal_3b97a8_results.pkl` |
+| 同上 | 123 | `light_cnn_patch_level_seed123_temporal_3b97a8` | `light_cnn_patch_level_seed123_temporal_3b97a8_results.pkl` |
+
+> **注意**：temporal split 下 `--seed` 不影响数据划分（划分完全由年份决定），但仍影响模型初始化和 DataLoader 顺序。
 
 ---
 
@@ -1521,6 +1563,49 @@ requests>=2.28.0               # [NEW v3.3] 瓦片下载
 ---
 
 ## 更新日志
+
+### v3.9 (2026-04-07)
+
+**新增：Temporal Split（按年份划分数据集）**
+
+支持按年份划分 train/val/test 集，用于评估模型的时间外推能力（temporal generalization）。与现有的按城市随机划分互补：城市划分测试空间泛化，年份划分测试时间泛化。
+
+#### 数据划分核心 (`dataset.py`)
+
+- **`split_dataset()`**: 新增 `temporal_split` 分支，按 `train_years/val_years/test_years` 划分样本
+  - 校验：年份集合不重叠、指定年份在数据中存在、划分后各集非空
+  - 不在任何集合中的年份样本被静默丢弃并打印 warning
+  - `temporal_split=False`（默认）时原有随机划分逻辑完全不变
+- **`get_dataloaders()` / `get_patch_level_dataloaders()`**: 透传 temporal split 参数
+- **`dataset_info`**: 保存 `temporal_split` 标志及年份列表
+
+#### 全链路支持
+
+- **`dataset_policy.py`**: 结构化政策特征的 city-level 和 patch-level dataloaders
+- **`dataset_policy_bert.py`**: BERT/Hybrid 政策特征的 city-level 和 patch-level dataloaders
+- **`train.py`**: 新增 `--temporal_split`, `--train_years`, `--val_years`, `--test_years` CLI 参数
+- **`train_multimodal.py`**: 同上
+- **`train_multimodal_bert.py`**: 同上
+- **`evaluate.py`**: 同上，含前置参数校验
+- **`analysis/policy_feature_analysis.py`**: 特征贡献度分析支持 temporal split
+
+#### 结果保存与分析
+
+- **Results pkl**: 所有训练脚本在结果中保存 `temporal_split` 布尔值及年份列表
+- **run_id 命名**: temporal split 模式下追加 `_temporal_{6位MD5hash}`，基于年份组合生成，与随机划分文件名不冲突
+- **`analyze_results_bd.py`**:
+  - 新增 `extract_split_info()` / `normalize_year_list()` / `format_years_compact()` 工具函数
+  - `split_tag` 字段加入所有 groupby 分组键，random split 与 temporal split 结果自动分桶
+  - 旧 pkl 文件兼容：`data.get('temporal_split', False)` 默认为随机划分
+
+#### 两种划分方式对比
+
+| 维度 | 随机按城市划分（默认） | Temporal Split (v3.9) |
+|------|---------------------|----------------------|
+| 评估目标 | 空间泛化（未见城市） | 时间泛化（未来年份） |
+| 数据划分依据 | seed 控制的城市随机分组 | 显式指定年份 |
+| 同一城市的数据 | 所有年份在同一集合 | 不同年份可在不同集合 |
+| 适用场景 | 评估跨区域预测能力 | 评估时间外推能力 |
 
 ### v3.8 (2026-03-17)
 

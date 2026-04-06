@@ -260,11 +260,17 @@ def load_model(seed, device):
     return model
 
 
-def get_test_loader_and_info(seed, batch_size=64, num_workers=2):
+def get_test_loader_and_info(seed, batch_size=64, num_workers=2,
+                             temporal_split=False, train_years=None,
+                             val_years=None, test_years=None):
     """Get test dataloader and dataset info for a given seed."""
     _, _, test_loader, dataset_info = get_patch_level_policy_dataloaders(
         batch_size=batch_size, num_workers=num_workers,
-        augment_train=False, seed=seed
+        augment_train=False, seed=seed,
+        temporal_split=temporal_split,
+        train_years=train_years,
+        val_years=val_years,
+        test_years=test_years
     )
     return test_loader, dataset_info
 
